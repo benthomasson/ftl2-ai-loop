@@ -869,6 +869,9 @@ async def reconcile(
             await asyncio.sleep(2)
 
         print(f"\nDid not converge after {max_iterations} iterations.")
+        await post_convergence_review(
+            desired_state, history, max_iterations, user_answers, rule_results,
+        )
         return False
 
 
