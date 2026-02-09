@@ -384,6 +384,12 @@ def build_prompt(current_state: dict, desired_state: str, rules: list[dict],
         desired state mentions nginx, submit both a verification observation AND the
         dnf/service/copy actions in iteration 0.
 
+        Convergence: When idempotent modules (dnf, apt, copy, service, file) return
+        "changed": false, they already verified the current state matches the desired
+        state. You do NOT need additional observations to confirm — converge immediately.
+        Only request verification observations for things modules can't check (e.g., a
+        web page returning the right content via curl).
+
         Current state:
         {state_json}
         {rules_summary}{history_summary}{answers_summary}{rule_results_summary}
