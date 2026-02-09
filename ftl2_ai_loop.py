@@ -175,17 +175,29 @@ def build_prompt(current_state: dict, desired_state: str, rules: list[dict],
         around modules. If a module exists for the task, use it.
 
         Action format (for the "actions" list):
-        {{"module": "dnf", "params": {{"name": "nginx", "state": "present"}}}}
-        {{"module": "service", "params": {{"name": "nginx", "state": "started"}}}}
         {{"module": "file", "params": {{"path": "/tmp/test", "state": "directory"}}}}
-        {{"module": "copy", "params": {{"content": "hello", "dest": "/tmp/hello.txt"}}}}
+        {{"module": "copy", "params": {{"src": "/tmp/source.txt", "dest": "/tmp/dest.txt"}}}}
+        {{"module": "shell", "params": {{"cmd": "echo 'hello world' > /tmp/hello.txt"}}}}
         {{"module": "command", "params": {{"cmd": "echo hello"}}}}
-        {{"module": "shell", "params": {{"cmd": "ls -la /tmp"}}}}
+        {{"module": "stat", "params": {{"path": "/etc/nginx/nginx.conf"}}}}
         {{"module": "community.general.linode_v4", "params": {{"label": "myserver", "type": "g6-nanode-1", "region": "us-east", "image": "linode/ubuntu22.04", "state": "present"}}}}
+
+        Platform-aware module usage:
+        - Package managers: use "dnf" on RedHat/Fedora, "apt" on Debian/Ubuntu,
+          "community.general.homebrew" on macOS. Check the OS from observations first.
+        - Services: use "service" on Linux (systemd). On macOS there is no service module —
+          use "command" or "shell" with launchctl if needed.
+        - The "copy" module does NOT support the "content" parameter. To write content to
+          a file, use: {{"module": "shell", "params": {{"cmd": "echo '<content>' > /path/to/file"}}}}
+          Or for multi-line content use a heredoc in shell.
+        - For remote hosts (Linux servers), dnf/apt/service work normally.
+        - The controller machine may be macOS while managed hosts are Linux. Use observations
+          to determine the target platform before choosing modules.
 
         IMPORTANT: Use fully qualified collection names (FQCN) for non-builtin modules:
         - community.general.linode_v4 (not linode_v4)
         - community.general.slack (not slack)
+        - community.general.homebrew (not homebrew)
         - community.postgresql.postgresql_db (not postgresql_db)
         - ansible.posix.firewalld (not firewalld)
 
