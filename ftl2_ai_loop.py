@@ -241,6 +241,14 @@ def build_prompt(current_state: dict, desired_state: str, rules: list[dict],
         {{"module": "stat", "params": {{"path": "/etc/nginx/nginx.conf"}}}}
         {{"module": "community.general.linode_v4", "params": {{"label": "myserver", "type": "g6-nanode-1", "region": "us-east", "image": "linode/ubuntu22.04", "state": "present"}}}}
 
+        Host targeting — to run a module on a remote host instead of localhost, add "host":
+        {{"host": "web01", "module": "dnf", "params": {{"name": "nginx", "state": "present"}}}}
+        {{"host": "web01", "module": "service", "params": {{"name": "nginx", "state": "started"}}}}
+        {{"host": "web01", "module": "shell", "params": {{"cmd": "cat /etc/os-release"}}}}
+        Without "host", the module runs on the local controller (localhost).
+        The host must be registered first via add_host in state_ops (see below).
+        Do NOT use "ssh user@host 'command'" via shell — use host targeting instead.
+
         Platform-aware module usage:
         - Package managers: use "dnf" on RedHat/Fedora, "apt" on Debian/Ubuntu,
           "community.general.homebrew" on macOS. Check the OS from observations first.
@@ -249,7 +257,8 @@ def build_prompt(current_state: dict, desired_state: str, rules: list[dict],
         - The "copy" module does NOT support the "content" parameter. To write content to
           a file, use: {{"module": "shell", "params": {{"cmd": "echo '<content>' > /path/to/file"}}}}
           Or for multi-line content use a heredoc in shell.
-        - For remote hosts (Linux servers), dnf/apt/service work normally.
+        - For remote hosts (Linux servers), use host targeting (the "host" field in actions)
+          with dnf/apt/service — they work normally on the remote host.
         - The controller machine may be macOS while managed hosts are Linux. Use observations
           to determine the target platform before choosing modules.
         - CRITICAL: The shell/command modules BLOCK until the process exits. To start
@@ -268,16 +277,20 @@ def build_prompt(current_state: dict, desired_state: str, rules: list[dict],
         Do NOT read secrets from environment variables or pass them as parameters.
         Just call the module — the secret is injected by the framework.
 
-        State file: If "_state_file" appears in the current state, it shows resources and
-        hosts that were saved in previous runs. You can save new resources to state by
-        including a "state_ops" list in your response:
+        State and host management: If "_state_file" appears in the current state, it shows
+        resources and hosts from previous runs. Use "state_ops" to manage them:
         "state_ops": [
           {{"op": "add_resource", "name": "hello-ai", "data": {{"provider": "linode", "label": "hello-ai", "ipv4": ["1.2.3.4"]}}}},
-          {{"op": "add_host", "name": "hello-ai", "ansible_host": "1.2.3.4", "groups": ["webservers"]}},
+          {{"op": "add_host", "name": "hello-ai", "ansible_host": "1.2.3.4", "ansible_user": "root", "groups": ["webservers"]}},
           {{"op": "remove", "name": "old-server"}}
         ]
-        Use state to track created resources so they persist between runs and can be
-        cleaned up later. Check "_state_file" before creating resources to avoid duplicates.
+        IMPORTANT: "add_host" registers the host in the LIVE INVENTORY so you can target
+        it with "host" in subsequent actions. After creating a server (e.g., via linode_v4),
+        you MUST add_host with its IP before you can run modules on it. Example workflow:
+        1. Action: create server via community.general.linode_v4 → get IP from result
+        2. State op: add_host with the IP
+        3. Next iteration: use {{"host": "hello-ai", "module": "dnf", ...}} to run on it
+        Check "_state_file" before creating resources to avoid duplicates.
 
         Current state:
         {state_json}
@@ -289,7 +302,8 @@ def build_prompt(current_state: dict, desired_state: str, rules: list[dict],
           "converged": true/false,
           "reasoning": "brief explanation of what you see and what needs to change",
           "actions": [
-            {{"module": "module_name", "params": {{"key": "value"}}}}
+            {{"module": "module_name", "params": {{"key": "value"}}}},
+            {{"host": "hostname", "module": "module_name", "params": {{"key": "value"}}}}
           ],
           "observe": [
             {{"name": "label", "module": "module_name", "params": {{"key": "value"}}}}
@@ -493,24 +507,31 @@ async def execute(ftl, actions: list[dict], dry_run: bool = False) -> list[dict]
     for action in actions:
         module_name = action["module"]
         params = action.get("params", {})
-        print(f"  → {module_name}({', '.join(f'{k}={v!r}' for k, v in params.items())})")
+        host = action.get("host")
+
+        if host:
+            print(f"  → {host}: {module_name}({', '.join(f'{k}={v!r}' for k, v in params.items())})")
+        else:
+            print(f"  → {module_name}({', '.join(f'{k}={v!r}' for k, v in params.items())})")
 
         if dry_run:
             print(f"    DRY RUN: skipped")
-            results.append({"module": module_name, "result": {"dry_run": True}})
+            results.append({"module": module_name, "host": host, "result": {"dry_run": True}})
             continue
 
         try:
-            module_fn = ftl
+            # Start from the host proxy if targeting a remote host
+            target = getattr(ftl, host) if host else ftl
+            module_fn = target
             for part in module_name.split("."):
                 module_fn = getattr(module_fn, part)
             result = await module_fn(**params)
             changed = result.get("changed", False) if isinstance(result, dict) else False
             print(f"    ok (changed={changed})")
-            results.append({"module": module_name, "result": result})
+            results.append({"module": module_name, "host": host, "result": result})
         except Exception as e:
             print(f"    FAILED: {e}")
-            results.append({"module": module_name, "result": {"error": str(e)}})
+            results.append({"module": module_name, "host": host, "result": {"error": str(e)}})
 
     return results
 
@@ -677,25 +698,29 @@ async def reconcile(
 
             # State operations
             state_ops = decision.get("state_ops", [])
-            if state_ops and hasattr(ftl, 'state') and ftl.state:
+            if state_ops:
                 for op in state_ops:
                     op_type = op.get("op")
                     name = op.get("name", "")
                     if not dry_run:
                         try:
                             if op_type == "add_resource":
-                                ftl.state.add_resource(name, op.get("data", {}))
+                                if hasattr(ftl, 'state') and ftl.state:
+                                    ftl.state.add_resource(name, op.get("data", {}))
                                 print(f"  State: added resource {name}")
                             elif op_type == "add_host":
-                                ftl.state.add_host(
-                                    name,
+                                # Use ftl.add_host() which registers in live
+                                # inventory AND persists to state file
+                                ftl.add_host(
+                                    hostname=name,
                                     ansible_host=op.get("ansible_host"),
-                                    ansible_user=op.get("ansible_user"),
+                                    ansible_user=op.get("ansible_user", "root"),
                                     groups=op.get("groups"),
                                 )
-                                print(f"  State: added host {name}")
+                                print(f"  Host added: {name} ({op.get('ansible_host', name)})")
                             elif op_type == "remove":
-                                ftl.state.remove(name)
+                                if hasattr(ftl, 'state') and ftl.state:
+                                    ftl.state.remove(name)
                                 print(f"  State: removed {name}")
                         except Exception as e:
                             print(f"  State op failed: {e}")

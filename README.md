@@ -241,9 +241,30 @@ See `examples/nginx_example.py` for a complete example.
 - **Secret bindings**: Secrets are injected into module calls automatically via FTL2's `secret_bindings`. The AI never sees the secret values.
 - **State file**: Optional JSON file that tracks created resources and hosts across runs. The AI can read state and add/remove entries.
 
+## Host Targeting
+
+Actions can target remote hosts by adding a `host` field. The AI creates a server, registers it with `add_host` in `state_ops`, and then runs modules on it directly — no SSH workarounds needed.
+
+```
+=== Iteration 1 ===
+Executing 1 action(s)...
+  → community.general.linode_v4(label='web01', ...)
+    ok (changed=True)
+  Host added: web01 (203.0.113.10)
+
+=== Iteration 2 ===
+Executing 2 action(s)...
+  → web01: dnf(name='nginx', state='present')
+    ok (changed=True)
+  → web01: service(name='nginx', state='started', enabled=True)
+    ok (changed=True)
+```
+
+The `add_host` state op registers the host in FTL2's live inventory (and persists to the state file if configured). After registration, the host name can be used in the `host` field of any action.
+
 ## Known Limitations
 
-- **Multi-host orchestration**: The AI can create remote servers but configuring them requires inventory management, host targeting (`ftl.hostname.module()`), and SSH setup. This workflow is not yet fully supported.
+- **SSH setup**: Host targeting requires SSH key authentication to be configured on the remote host. Pre-built images with SSH keys are the easiest path.
 - **Rule quality**: AI-generated rules can reference nonexistent observer keys (creating always-true conditions), use wrong module syntax, or target the wrong host. Use `--dev` mode for AI-assisted rule review. Automatic rule lifecycle management (rewrite, delete, disable) is not yet implemented.
 - **Background processes**: FTL2's shell module blocks until all child processes exit. Background daemons must be started with `setsid ... < /dev/null &` — `nohup &` alone is insufficient.
 - **`copy` module**: Does not support the `content` parameter. Use `shell` with `echo` or heredoc instead.
