@@ -372,6 +372,7 @@ async def reconcile(
         rules = load_rules(rules_dir)
         history: list[dict] = []
         extra_observers: list[dict] = []
+        consecutive_rule_runs = 0
 
         print(f"Desired state: {desired_state}")
         print(f"Rules loaded: {len(rules)}")
@@ -388,12 +389,16 @@ async def reconcile(
             all_observers = observers + extra_observers
             current_state = await observe(ftl, all_observers)
 
-            # Check rules first
+            # Check rules first, but don't let rules loop forever.
+            # If a rule handled the last iteration too, skip rules and
+            # let the AI check for convergence.
             print("Checking rules...")
-            if await check_rules(rules, current_state, ftl, dry_run):
+            if consecutive_rule_runs < 1 and await check_rules(rules, current_state, ftl, dry_run):
                 print("Rule handled the situation.\n")
                 extra_observers = []
+                consecutive_rule_runs += 1
                 continue
+            consecutive_rule_runs = 0
 
             # Decide
             print("Asking AI...")
