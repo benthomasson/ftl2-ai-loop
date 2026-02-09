@@ -123,6 +123,32 @@ async def check_rules(rules: list[dict], state: dict, ftl, dry_run: bool = False
     return False
 
 
+async def find_matching_rule(rules: list[dict], state: dict) -> dict | None:
+    """Find the first rule whose condition matches. Does not execute."""
+    for rule in rules:
+        try:
+            if await rule["condition"](state):
+                return rule
+        except Exception as e:
+            print(f"  Rule {rule['name']} condition error: {e}")
+    return None
+
+
+async def execute_rule(rule: dict, ftl, dry_run: bool = False) -> tuple[bool, str]:
+    """Execute a single rule's action. Returns (success, detail)."""
+    if dry_run:
+        return True, "dry run"
+    errors_before = len(ftl.errors) if hasattr(ftl, 'errors') else 0
+    try:
+        await rule["action"](ftl)
+    except Exception as e:
+        return False, str(e)
+    errors_after = len(ftl.errors) if hasattr(ftl, 'errors') else 0
+    if errors_after > errors_before:
+        return False, f"{errors_after - errors_before} module failure(s)"
+    return True, "ok"
+
+
 def save_rule(rule_data: dict, rules_dir: str | Path) -> Path:
     """Save an AI-generated rule as a Python file."""
     rules_path = Path(rules_dir)
@@ -160,7 +186,8 @@ def save_rule(rule_data: dict, rules_dir: str | Path) -> Path:
 
 
 def build_prompt(current_state: dict, desired_state: str, rules: list[dict],
-                 history: list[dict]) -> str:
+                 history: list[dict], user_answers: list[dict] | None = None,
+                 rule_results: list[dict] | None = None) -> str:
     """Build the prompt for the LLM decision step."""
     rules_summary = ""
     if rules:
@@ -176,6 +203,25 @@ def build_prompt(current_state: dict, desired_state: str, rules: list[dict],
             results_str = json.dumps(h["results"], indent=2, default=str)
             entries.append(f"Iteration {h['iteration']}:\n  Actions: {actions_str}\n  Results: {results_str}")
         history_summary = f"\nPrevious iterations (don't repeat failed approaches):\n" + "\n".join(entries) + "\n"
+
+    answers_summary = ""
+    if user_answers:
+        entries = []
+        for a in user_answers:
+            entries.append(f"  Q: {a['question']}\n  A: {a['answer']}")
+        answers_summary = f"\nUser answers to your previous questions:\n" + "\n".join(entries) + "\n"
+
+    rule_results_summary = ""
+    if rule_results:
+        entries = []
+        for r in rule_results:
+            if r.get("denied"):
+                entries.append(f"  Rule \"{r['rule']}\" matched but was DENIED by AI review: {r.get('reasoning', '')}")
+            elif r.get("success"):
+                entries.append(f"  Rule \"{r['rule']}\" fired: {r.get('detail', 'ok')}")
+            else:
+                entries.append(f"  Rule \"{r['rule']}\" fired but FAILED: {r.get('detail', 'unknown error')}")
+        rule_results_summary = f"\nRule execution results from previous iterations:\n" + "\n".join(entries) + "\n"
 
     state_json = json.dumps(current_state, indent=2, default=str)
 
@@ -235,7 +281,7 @@ def build_prompt(current_state: dict, desired_state: str, rules: list[dict],
 
         Current state:
         {state_json}
-        {rules_summary}{history_summary}
+        {rules_summary}{history_summary}{answers_summary}{rule_results_summary}
         Desired state: {desired_state}
 
         Respond with ONLY a JSON object (no markdown, no explanation outside the JSON):
@@ -253,6 +299,10 @@ def build_prompt(current_state: dict, desired_state: str, rules: list[dict],
             "condition": "when this is true",
             "description": "what this rule does",
             "code": "async def condition(state):\\n    ...\\nasync def action(ftl):\\n    ..."
+          }},
+          "ask": {{
+            "question": "Which web server should I install?",
+            "options": ["nginx", "apache", "caddy"]
           }}
         }}
 
@@ -277,6 +327,17 @@ def build_prompt(current_state: dict, desired_state: str, rules: list[dict],
           For FQCN modules use dot notation: "await ftl.community.general.linode_v4(label=..., state='present')".
           Do NOT use ftl.call(), ftl.run(), subprocess, os.system, curl, or any other method.
           Do NOT read secrets from os.environ — they are injected automatically.
+        - "ask" is optional: use it when you need information from the user before
+          proceeding. The loop will pause, show your question, and feed the answer back
+          to you on the next iteration. Use this when:
+          - The desired state is ambiguous (e.g., "set up a web server" — which one?)
+          - You need information you can't observe (credentials, domain names, preferences)
+          - You want to confirm before a destructive action (deleting data, overwriting config)
+          - You're stuck after multiple failed attempts and need guidance
+          - There are multiple valid approaches and the user should choose
+          "options" is optional — omit it for free-form questions. When present, the user
+          can pick a numbered option or type a custom answer.
+          When you use "ask", set "actions" to [] — don't act and ask in the same response.
         - Don't duplicate existing rules.
         - Don't repeat actions that failed in previous iterations.
     """)
@@ -296,9 +357,11 @@ def extract_json(text: str) -> str:
 
 
 async def decide(current_state: dict, desired_state: str, rules: list[dict],
-                 history: list[dict]) -> dict:
+                 history: list[dict], user_answers: list[dict] | None = None,
+                 rule_results: list[dict] | None = None) -> dict:
     """Ask the AI what to do via claude -p."""
-    prompt = build_prompt(current_state, desired_state, rules, history)
+    prompt = build_prompt(current_state, desired_state, rules, history, user_answers,
+                          rule_results)
 
     proc = await asyncio.create_subprocess_exec(
         "claude", "-p", prompt,
@@ -319,6 +382,106 @@ async def decide(current_state: dict, desired_state: str, rules: list[dict],
         print(f"  Failed to parse AI response: {e}")
         print(f"  Raw output: {raw[:500]}")
         return {"converged": False, "reasoning": "Failed to parse AI response", "actions": []}
+
+
+# --- Dev Mode: Rule Review ---
+
+
+def build_review_prompt(rule: dict, current_state: dict, desired_state: str) -> str:
+    """Build prompt for the AI to review a rule before it fires."""
+    state_json = json.dumps(current_state, indent=2, default=str)
+
+    rule_source = ""
+    if rule.get("path"):
+        try:
+            rule_source = Path(rule["path"]).read_text()
+        except Exception:
+            rule_source = "(could not read source)"
+
+    return textwrap.dedent(f"""\
+        You are reviewing a rule that is about to fire in an infrastructure reconciliation loop.
+        The rule's condition matched the current state. You must decide whether to approve it.
+
+        Rule name: {rule['name']}
+        Rule source:
+        ```python
+        {rule_source}
+        ```
+
+        Current state:
+        {state_json}
+
+        Desired state: {desired_state}
+
+        Review the rule and decide:
+        - Is the condition correct, or is it matching spuriously (e.g., referencing a
+          nonexistent key that defaults to a truthy/falsy value)?
+        - Will the action move the system toward the desired state?
+        - Is the action targeting the right host (local vs remote)?
+        - Are the module calls correct (right module name, right parameters)?
+        - Could this action cause harm (data loss, service disruption)?
+
+        Respond with ONLY a JSON object:
+        {{
+          "approve": true/false,
+          "reasoning": "brief explanation of your decision"
+        }}
+    """)
+
+
+async def review_rule(rule: dict, current_state: dict, desired_state: str) -> dict:
+    """Ask the AI to review a rule before it fires. Returns approve/deny decision."""
+    prompt = build_review_prompt(rule, current_state, desired_state)
+
+    proc = await asyncio.create_subprocess_exec(
+        "claude", "-p", prompt,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    stdout, stderr = await proc.communicate()
+
+    if proc.returncode != 0:
+        # If review fails, approve by default so we don't block on AI errors
+        return {"approve": True, "reasoning": "AI review unavailable, defaulting to approve"}
+
+    raw = stdout.decode().strip()
+    try:
+        return json.loads(extract_json(raw))
+    except json.JSONDecodeError:
+        return {"approve": True, "reasoning": "Could not parse review response, defaulting to approve"}
+
+
+# --- Ask User ---
+
+
+def ask_user(ask_data: dict) -> str:
+    """Prompt the user for input and return their answer."""
+    question = ask_data["question"]
+    options = ask_data.get("options", [])
+
+    print(f"\n  AI asks: {question}")
+    if options:
+        for j, opt in enumerate(options, 1):
+            print(f"    {j}. {opt}")
+        print(f"    Or type a custom answer.")
+
+    try:
+        answer = input("  > ").strip()
+    except (EOFError, KeyboardInterrupt):
+        answer = ""
+        print()
+
+    # If they picked a number and there are options, resolve it
+    if options and answer.isdigit():
+        idx = int(answer) - 1
+        if 0 <= idx < len(options):
+            answer = options[idx]
+
+    if not answer:
+        answer = "(no answer)"
+
+    print(f"  Answer: {answer}")
+    return answer
 
 
 # --- Execute ---
@@ -365,6 +528,7 @@ async def reconcile(
     quiet: bool = False,
     secret_bindings: dict | None = None,
     state_file: str | None = None,
+    dev: bool = False,
 ):
     """Run the AI reconciliation loop."""
     if observers is None:
@@ -383,6 +547,8 @@ async def reconcile(
         rules = load_rules(rules_dir)
         history: list[dict] = []
         extra_observers: list[dict] = []
+        user_answers: list[dict] = []
+        rule_results: list[dict] = []
         consecutive_rule_runs = 0
 
         print(f"Desired state: {desired_state}")
@@ -390,6 +556,8 @@ async def reconcile(
         print(f"Max iterations: {max_iterations}")
         if dry_run:
             print("DRY RUN — actions will not be executed")
+        if dev:
+            print("DEV MODE — AI reviews rules before they fire")
         print()
 
         for i in range(max_iterations):
@@ -421,16 +589,53 @@ async def reconcile(
             # If a rule handled the last iteration too, skip rules and
             # let the AI check for convergence.
             print("Checking rules...")
-            if consecutive_rule_runs < 1 and await check_rules(rules, current_state, ftl, dry_run):
-                print("Rule handled the situation.\n")
-                extra_observers = []
-                consecutive_rule_runs += 1
-                continue
-            consecutive_rule_runs = 0
+            if dev:
+                # Dev mode: AI reviews rules before they fire and sees results after
+                matched = await find_matching_rule(rules, current_state) if consecutive_rule_runs < 1 else None
+                if matched:
+                    print(f"  Rule matched: {matched['name']}")
+                    print("  Reviewing rule...")
+                    review = await review_rule(matched, current_state, desired_state)
+                    review_reasoning = review.get("reasoning", "")
+                    if review_reasoning:
+                        print(f"  Review: {review_reasoning}")
+
+                    if review.get("approve"):
+                        print(f"  Approved — executing rule {matched['name']}")
+                        success, detail = await execute_rule(matched, ftl, dry_run)
+                        print(f"  Result: {detail}")
+                        rule_results.append({
+                            "rule": matched["name"],
+                            "success": success,
+                            "detail": detail,
+                        })
+                        if success:
+                            consecutive_rule_runs += 1
+                            extra_observers = []
+                            print()
+                            continue
+                        print(f"  Rule failed, falling through to AI...")
+                    else:
+                        print(f"  Denied — skipping rule {matched['name']}")
+                        rule_results.append({
+                            "rule": matched["name"],
+                            "denied": True,
+                            "reasoning": review_reasoning,
+                        })
+                consecutive_rule_runs = 0
+            else:
+                # Normal mode: rules fire without AI review
+                if consecutive_rule_runs < 1 and await check_rules(rules, current_state, ftl, dry_run):
+                    print("Rule handled the situation.\n")
+                    extra_observers = []
+                    consecutive_rule_runs += 1
+                    continue
+                consecutive_rule_runs = 0
 
             # Decide
             print("Asking AI...")
-            decision = await decide(current_state, desired_state, rules, history)
+            decision = await decide(current_state, desired_state, rules, history, user_answers,
+                                    rule_results)
 
             reasoning = decision.get("reasoning", "")
             if reasoning:
@@ -439,6 +644,17 @@ async def reconcile(
             if decision.get("converged"):
                 print(f"\nConverged after {i + 1} iteration(s).")
                 return True
+
+            # Ask the user a question if the AI needs input
+            ask_data = decision.get("ask")
+            if ask_data and ask_data.get("question"):
+                answer = ask_user(ask_data)
+                user_answers.append({
+                    "question": ask_data["question"],
+                    "answer": answer,
+                })
+                print()
+                continue
 
             # Pick up any additional observers the AI requested
             extra_observers = decision.get("observe", [])
@@ -528,6 +744,8 @@ def cli():
     parser.add_argument("-s", "--secret", action="append", default=[], metavar="MODULE.PARAM=ENV_VAR",
                         help="Bind a secret: community.general.linode_v4.access_token=LINODE_TOKEN")
     parser.add_argument("--state-file", help="FTL2 state file for tracking resources")
+    parser.add_argument("--dev", action="store_true",
+                        help="Dev mode: AI reviews rules before they fire and sees results after")
     args = parser.parse_args()
 
     # Parse secret bindings: "module.param=ENV_VAR" → {"module": {"param": "ENV_VAR"}}
@@ -553,6 +771,7 @@ def cli():
         quiet=args.quiet,
         secret_bindings=secret_bindings or None,
         state_file=args.state_file,
+        dev=args.dev,
     ))
     sys.exit(0 if converged else 1)
 
