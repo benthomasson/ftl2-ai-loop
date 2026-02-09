@@ -258,9 +258,9 @@ def build_prompt(current_state: dict, desired_state: str, rules: list[dict],
           "community.general.homebrew" on macOS. Check the OS from observations first.
         - Services: use "service" on Linux (systemd). On macOS there is no service module —
           use "command" or "shell" with launchctl if needed.
-        - The "copy" module does NOT support the "content" parameter. To write content to
-          a file, use: {{"module": "shell", "params": {{"cmd": "echo '<content>' > /path/to/file"}}}}
-          Or for multi-line content use a heredoc in shell.
+        - The "copy" module supports a "content" parameter for writing text to files. Prefer
+          copy over shell for file content — it is idempotent (won't report changed if content matches).
+          Example: {{"module": "copy", "params": {{"content": "<h1>Hello</h1>", "dest": "/var/www/html/index.html"}}}}
         - For remote hosts (Linux servers), use host targeting (the "host" field in actions)
           with dnf/apt/service — they work normally on the remote host.
         - The controller machine may be macOS while managed hosts are Linux. Use observations
