@@ -94,19 +94,26 @@ def load_rules(rules_dir: str | Path) -> list[dict]:
 async def check_rules(rules: list[dict], state: dict, ftl, dry_run: bool = False) -> bool:
     """Check if any rule matches the current state and execute it.
 
-    Returns True if a rule handled the situation.
+    Returns True if a rule handled the situation successfully.
+    Returns False if no rule matched or the matching rule's action failed
+    (so the AI gets a chance to handle it).
     """
     for rule in rules:
         try:
             if await rule["condition"](state):
                 print(f"  Rule matched: {rule['name']}")
                 if not dry_run:
-                    await rule["action"](ftl)
+                    try:
+                        await rule["action"](ftl)
+                    except Exception as e:
+                        print(f"  Rule {rule['name']} action failed: {e}")
+                        print(f"  Falling through to AI...")
+                        return False
                 else:
                     print(f"  DRY RUN: would execute rule {rule['name']}")
                 return True
         except Exception as e:
-            print(f"  Rule {rule['name']} error: {e}")
+            print(f"  Rule {rule['name']} condition error: {e}")
     return False
 
 

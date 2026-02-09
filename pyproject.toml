@@ -9,6 +9,7 @@ description = "AI reconciliation loop for FTL2 — observe, reason, act, learn"
 requires-python = ">=3.13"
 dependencies = [
     "ftl2 @ git+https://github.com/benthomasson/ftl2",
+    "linode_api4",
 ]
 
 [project.scripts]
