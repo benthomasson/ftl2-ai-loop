@@ -193,6 +193,10 @@ def build_prompt(current_state: dict, desired_state: str, rules: list[dict],
         - For remote hosts (Linux servers), dnf/apt/service work normally.
         - The controller machine may be macOS while managed hosts are Linux. Use observations
           to determine the target platform before choosing modules.
+        - CRITICAL: The shell/command modules BLOCK until the process exits. To start
+          background/daemon processes, you MUST fully detach them so the shell returns:
+          {{"module": "shell", "params": {{"cmd": "setsid python3 -m http.server 8000 > /tmp/server.log 2>&1 < /dev/null &"}}}}
+          Using just "nohup ... &" is NOT enough — the module will still hang.
 
         IMPORTANT: Use fully qualified collection names (FQCN) for non-builtin modules:
         - community.general.linode_v4 (not linode_v4)
