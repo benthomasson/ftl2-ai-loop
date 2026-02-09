@@ -676,6 +676,9 @@ async def reconcile(
 
             if decision.get("converged"):
                 print(f"\nConverged after {i + 1} iteration(s).")
+                await post_convergence_review(
+                    desired_state, history, i + 1, user_answers, rule_results,
+                )
                 return True
 
             # Ask the user a question if the AI needs input
@@ -752,6 +755,63 @@ async def reconcile(
 
         print(f"\nDid not converge after {max_iterations} iterations.")
         return False
+
+
+# --- Post-Convergence Review ---
+
+
+async def post_convergence_review(
+    desired_state: str,
+    history: list[dict],
+    iterations: int,
+    user_answers: list[dict],
+    rule_results: list[dict],
+):
+    """Ask the AI to review its own performance and suggest feature requests."""
+    history_json = json.dumps(history, indent=2, default=str)
+    answers_json = json.dumps(user_answers, indent=2) if user_answers else "None"
+    rules_json = json.dumps(rule_results, indent=2) if rule_results else "None"
+
+    prompt = textwrap.dedent(f"""\
+        You just completed an infrastructure reconciliation run. Review your performance
+        and suggest improvements to the tool.
+
+        Desired state: {desired_state}
+        Iterations to converge: {iterations}
+        Action history: {history_json}
+        User questions asked: {answers_json}
+        Rule results: {rules_json}
+
+        Please provide:
+
+        1. PERFORMANCE REVIEW — Be honest and specific:
+           - What went well?
+           - What was inefficient? (unnecessary iterations, wrong approaches, wasted steps)
+           - Did you make mistakes? What caused them?
+           - Could you have converged faster? How?
+
+        2. FEATURE REQUESTS — What changes to ftl2-ai-loop would make your job easier?
+           Think about what frustrated you, what information you were missing, what
+           capabilities you wished you had. Be specific and practical.
+
+        Write your response as plain text for the user to read. Be concise and direct.
+    """)
+
+    proc = await asyncio.create_subprocess_exec(
+        "claude", "-p", prompt,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    stdout, stderr = await proc.communicate()
+
+    if proc.returncode != 0:
+        return
+
+    review = stdout.decode().strip()
+    if review:
+        print(f"\n--- AI Self-Review ---")
+        print(review)
+        print(f"--- End Review ---\n")
 
 
 # --- Continuous Mode ---
