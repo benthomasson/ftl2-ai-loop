@@ -78,6 +78,9 @@ ftl2-ai-loop "nginx installed and running" --rules-dir my-rules/
 
 # Limit iterations
 ftl2-ai-loop "complex setup" --max-iterations 5
+
+# Dev mode — AI reviews rules before they fire
+ftl2-ai-loop "nginx installed and running" --dev --rules-dir my-rules/
 ```
 
 ### CLI Options
@@ -92,6 +95,7 @@ ftl2-ai-loop "complex setup" --max-iterations 5
 | `--quiet` | Suppress FTL2 module output |
 | `-s, --secret` | Bind a secret: `MODULE.PARAM=ENV_VAR` |
 | `--state-file` | JSON state file for tracking resources across runs |
+| `--dev` | Dev mode: AI reviews rules before they fire and sees results after |
 
 ## Rules
 
@@ -115,6 +119,55 @@ async def action(ftl) -> None:
 Rules are checked before the AI on every iteration. When a rule handles the situation, the AI is never called. As more rules accumulate, the system becomes faster and cheaper.
 
 Rules that fail (action raises an exception or causes FTL2 module errors) automatically fall through to the AI. Rules that fire more than once consecutively without convergence are skipped so the AI can re-evaluate.
+
+### Dev Mode
+
+With `--dev`, the AI reviews every rule before it fires. When a rule's condition matches:
+
+1. The AI sees the rule's source code and current state
+2. It approves or denies the rule
+3. If approved, the rule executes and the AI sees the result on the next iteration
+4. If denied, the rule is skipped and the AI handles the situation directly
+
+```
+=== Iteration 1 ===
+Observing...
+Checking rules...
+  Rule matched: ensure_nginx
+  Reviewing rule...
+  Review: The condition checks nginx_service but that observer key doesn't exist
+          in the current state, causing a spurious match via default value.
+  Denied — skipping rule ensure_nginx
+Asking AI...
+```
+
+This catches the rule quality issues discovered during testing — always-true conditions, wrong host targeting, bad module syntax — before they cause problems. Rule execution results (approved/denied, success/failure) accumulate and are visible to the AI in subsequent iterations, so it can decide to rewrite or delete problematic rules.
+
+## Ask User
+
+The AI can pause the loop to ask the user a question when it needs information it can't observe. The answer is fed back into the next iteration's context.
+
+```
+=== Iteration 1 ===
+Observing...
+Checking rules...
+Asking AI...
+  Reasoning: The desired state says "set up a web server" but doesn't specify which one.
+
+  AI asks: Which web server should I install?
+    1. nginx
+    2. apache
+    3. caddy
+    Or type a custom answer.
+  > 1
+  Answer: nginx
+```
+
+The AI uses this when:
+- The desired state is ambiguous
+- It needs information it can't observe (domain names, preferences)
+- It wants to confirm before a destructive action
+- It's stuck after multiple failed attempts
 
 ## Programmatic Usage
 
@@ -155,7 +208,7 @@ See `examples/nginx_example.py` for a complete example.
 ## Known Limitations
 
 - **Multi-host orchestration**: The AI can create remote servers but configuring them requires inventory management, host targeting (`ftl.hostname.module()`), and SSH setup. This workflow is not yet fully supported.
-- **Rule quality**: AI-generated rules can reference nonexistent observer keys (creating always-true conditions), use wrong module syntax, or target the wrong host. Rule review and lifecycle management is not yet implemented.
+- **Rule quality**: AI-generated rules can reference nonexistent observer keys (creating always-true conditions), use wrong module syntax, or target the wrong host. Use `--dev` mode for AI-assisted rule review. Automatic rule lifecycle management (rewrite, delete, disable) is not yet implemented.
 - **Background processes**: FTL2's shell module blocks until all child processes exit. Background daemons must be started with `setsid ... < /dev/null &` — `nohup &` alone is insufficient.
 - **`copy` module**: Does not support the `content` parameter. Use `shell` with `echo` or heredoc instead.
 
