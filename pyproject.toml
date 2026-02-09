@@ -13,3 +13,6 @@ dependencies = [
 
 [project.scripts]
 ftl2-ai-loop = "ftl2_ai_loop:cli"
+
+[tool.hatch.metadata]
+allow-direct-references = true
