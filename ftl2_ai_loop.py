@@ -55,9 +55,81 @@ async def observe(ftl, observers: list[dict]) -> dict:
                 module_fn = getattr(module_fn, part)
             result = await module_fn(**params)
             state[obs["name"]] = result
+
+            # Persist OS facts to state file when we learn them
+            if host and hasattr(ftl, 'state') and ftl.state:
+                _persist_host_facts(ftl, host, module_name, params, result)
+
         except Exception as e:
             state[obs["name"]] = {"error": str(e)}
     return state
+
+
+def _persist_host_facts(ftl, hostname: str, module: str, params: dict, result: dict):
+    """Extract and persist OS facts from observation results to the state file.
+
+    When setup or os-release observations run on a host, save key facts
+    (os_family, distribution, pkg_manager) so future runs don't need to
+    re-discover them.
+    """
+    facts = {}
+
+    # setup module returns ansible_facts with system, machine, etc.
+    if module == "setup":
+        af = result.get("ansible_facts", {})
+        if af.get("system"):
+            facts["system"] = af["system"]
+        if af.get("machine"):
+            facts["machine"] = af["machine"]
+
+    # shell/command running cat /etc/os-release — parse the output
+    if module in ("shell", "command"):
+        cmd = params.get("cmd", "")
+        stdout = result.get("stdout", "")
+        if "os-release" in cmd and stdout:
+            parsed = _parse_os_release(stdout)
+            if parsed:
+                facts.update(parsed)
+
+    if facts and ftl.state.has_host(hostname):
+        host_data = ftl.state.get_host(hostname) or {}
+        existing_facts = host_data.get("facts", {})
+        if facts != {k: existing_facts.get(k) for k in facts}:
+            existing_facts.update(facts)
+            # Re-add host with updated facts
+            ftl.state.add_host(
+                hostname,
+                ansible_host=host_data.get("ansible_host"),
+                ansible_user=host_data.get("ansible_user"),
+                ansible_port=host_data.get("ansible_port", 22),
+                groups=host_data.get("groups"),
+                facts=existing_facts,
+            )
+
+
+def _parse_os_release(text: str) -> dict:
+    """Parse /etc/os-release output into useful facts."""
+    kv = {}
+    for line in text.strip().splitlines():
+        if "=" in line:
+            key, _, val = line.partition("=")
+            kv[key.strip()] = val.strip().strip('"')
+
+    facts = {}
+    if "ID" in kv:
+        distro_id = kv["ID"].lower()
+        facts["distribution"] = kv.get("PRETTY_NAME", kv.get("NAME", distro_id))
+        facts["distribution_id"] = distro_id
+
+        # Derive package manager from distro
+        dnf_distros = {"fedora", "rhel", "centos", "rocky", "alma", "ol"}
+        apt_distros = {"debian", "ubuntu", "mint", "pop"}
+        if distro_id in dnf_distros:
+            facts["pkg_manager"] = "dnf"
+        elif distro_id in apt_distros:
+            facts["pkg_manager"] = "apt"
+
+    return facts
 
 
 DEFAULT_OBSERVERS = [
@@ -300,6 +372,17 @@ def build_prompt(current_state: dict, desired_state: str, rules: list[dict],
         If SSH authentication fails, re-register the host with the correct ansible_user
         before retrying module calls. Do NOT keep retrying the same failing module.
         Check "_state_file" before creating resources to avoid duplicates.
+        Hosts in "_state_file" may include a "facts" field with cached OS information
+        (distribution, pkg_manager, system, machine). Use these facts to choose the
+        right package manager and avoid running setup/os-release checks unnecessarily.
+
+        Efficiency: You can submit "observe" and "actions" in the SAME response. When
+        the state file tells you a host exists (and especially when it has cached facts),
+        act immediately — don't waste an iteration on pure observation. Request
+        observations to verify results, and include actions for what you already know
+        needs to happen. For example, if the state file shows a Fedora host and the
+        desired state mentions nginx, submit both a verification observation AND the
+        dnf/service/copy actions in iteration 0.
 
         Current state:
         {state_json}
