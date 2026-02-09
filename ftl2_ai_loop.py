@@ -40,14 +40,17 @@ async def observe(ftl, observers: list[dict]) -> dict:
         name: key in the returned state dict
         module: FTL2 module to call
         params: kwargs for the module (optional)
+        host: optional hostname to run the observation on (default: localhost)
     """
     state = {}
     for obs in observers:
         module_name = obs["module"]
         params = obs.get("params", {})
+        host = obs.get("host")
         try:
-            # Support dotted module names (e.g., "community.general.slack")
-            module_fn = ftl
+            # Start from the host proxy if targeting a remote host
+            target = getattr(ftl, host) if host else ftl
+            module_fn = target
             for part in module_name.split("."):
                 module_fn = getattr(module_fn, part)
             result = await module_fn(**params)
@@ -311,7 +314,8 @@ def build_prompt(current_state: dict, desired_state: str, rules: list[dict],
             {{"host": "hostname", "module": "module_name", "params": {{"key": "value"}}}}
           ],
           "observe": [
-            {{"name": "label", "module": "module_name", "params": {{"key": "value"}}}}
+            {{"name": "label", "module": "module_name", "params": {{"key": "value"}}}},
+            {{"name": "label", "host": "hostname", "module": "module_name", "params": {{"key": "value"}}}}
           ],
           "rule": {{
             "name": "snake_case_name",
@@ -331,6 +335,9 @@ def build_prompt(current_state: dict, desired_state: str, rules: list[dict],
         - "actions" is the list of module calls to make now. Empty if converged.
         - "observe" is optional: additional observations to make next iteration
           (to gather state you need but don't have yet). Use the same format as actions.
+          Include "host" to observe a remote host instead of localhost. Without "host",
+          observations run on the local controller. When checking state on a remote server,
+          you MUST use "host" — otherwise you're checking localhost.
         - "rule" is optional: include if you see a pattern worth codifying as a
           permanent rule. Rule code MUST use this exact syntax for module calls:
 
