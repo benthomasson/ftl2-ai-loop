@@ -1,0 +1,11 @@
+[project]
+name = "ftl2-ai-loop"
+version = "0.1.0"
+description = "AI reconciliation loop for FTL2 — observe, reason, act, learn"
+requires-python = ">=3.13"
+dependencies = [
+    "ftl2 @ git+https://github.com/benthomasson/ftl2",
+]
+
+[project.scripts]
+ftl2-ai-loop = "ftl2_ai_loop:cli"
