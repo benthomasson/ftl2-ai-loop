@@ -2,75 +2,102 @@
 
 ## What This Is
 
-An AI reconciliation loop for infrastructure automation. Like a Kubernetes controller, but the controller logic is an LLM instead of hardcoded Go. The AI observes infrastructure state via FTL2 modules, decides what to do, executes, and iterates until convergence.
-
-Over time, the AI writes deterministic rules for recurring patterns. The system progressively self-hardens: AI handles everything at first, then rules take over routine cases, and the AI focuses on novel situations.
+An AI reconciliation loop for FTL2. Describe the desired state in natural language, and the AI observes infrastructure state via FTL2 modules, decides what actions to take, executes them, and iterates until convergence. Over time it writes deterministic Python rules for recurring patterns — the system progressively self-hardens.
 
 ## Architecture
 
 ```
-observe (FTL2 modules) → check rules → [match? → deterministic action]
-                                        [no match? → AI decides → execute → optionally write rule]
+observe (FTL2 modules) → check rules → [match → execute rule action → next iteration]
+                                        [no match → AI decides → execute → optionally write rule]
 ```
 
-### Core Components
+### Core Components in `ftl2_ai_loop.py`
 
-- `observe()` — Runs FTL2 modules to gather current state (command, stat, service, etc.)
-- `check_rules()` — Tests loaded rules against current state. If a rule matches, execute its action without calling the AI.
-- `decide()` — Pipes current state + desired state to `claude -p`. Returns a JSON decision with actions to take and optionally a rule to save.
-- `execute()` — Runs the decided FTL2 module calls.
-- `reconcile()` — The main loop tying it all together.
+| Function | Purpose |
+|----------|---------|
+| `observe()` | Runs FTL2 modules to gather current state into a dict |
+| `load_rules()` | Loads Python rule files from `rules/` via `importlib.util` |
+| `check_rules()` | Tests rule conditions against state, executes matching action |
+| `build_prompt()` | Constructs the LLM prompt with state, desired state, rules, history |
+| `decide()` | Calls `claude -p` with the prompt, parses JSON response |
+| `execute()` | Runs FTL2 module calls from the AI decision |
+| `reconcile()` | Main loop: observe → rules → decide → execute → learn |
+| `cli()` | Argument parser and entry point |
 
 ### LLM Interface
 
-Uses `claude -p` (Claude Code pipe mode) via `asyncio.create_subprocess_exec`. No SDK dependency. The prompt includes current state, desired state, existing rules, and recent action history.
+Uses `claude -p` (Claude Code pipe mode) via `asyncio.create_subprocess_exec`. No anthropic SDK dependency. The AI returns a JSON object with:
+- `converged` — whether the desired state is achieved
+- `reasoning` — explanation of what it sees
+- `actions` — list of `{"module": "name", "params": {...}}` to execute
+- `observe` — optional additional observations to request next iteration
+- `rule` — optional rule to save for future use
+- `state_ops` — optional state file operations
 
 ### Rules
 
 Rules are Python files in `rules/` with two async functions:
 - `condition(state: dict) -> bool` — Does this rule apply?
-- `action(ftl) -> None` — What FTL2 modules to call.
+- `action(ftl) -> None` — What FTL2 modules to call (using `await ftl.module_name(**params)`)
 
-The AI generates these. They use the same FTL2 module calls as any FTL2 script.
+Rules are checked before the AI. If a rule matches, its action runs and the AI is skipped. Failed rules (exceptions or `ftl.errors` growth) fall through to the AI. Consecutive rule runs are limited to 1 to prevent infinite loops from always-true conditions.
+
+### Secret Bindings
+
+Secrets are injected via FTL2's `secret_bindings` mechanism. CLI format: `-s community.general.linode_v4.access_token=LINODE_TOKEN` maps the env var `LINODE_TOKEN` to the `access_token` parameter of the `community.general.linode_v4` module.
+
+### State File
+
+Optional `--state-file state.json` tracks resources and hosts across runs. The AI can read `_state_file` from observations and issue `state_ops` to add/remove entries.
 
 ## Running
 
 ```bash
-# Standalone via uv
+# Via uvx from GitHub (no install)
+uvx --from "git+https://github.com/benthomasson/ftl2-ai-loop" \
+    ftl2-ai-loop "ensure /tmp/demo exists as a directory"
+
+# Local development
 uv run ftl2_ai_loop.py "ensure /tmp/demo exists as a directory"
 
-# With inventory for remote hosts
-uv run ftl2_ai_loop.py "nginx installed and running" -i inventory.yml
-
-# Dry run — observe and decide but don't execute
-uv run ftl2_ai_loop.py "PostgreSQL 16 with mydb database" --dry-run
-
-# As installed package
-ftl2-ai-loop "nginx serving example.com with TLS"
+# With options
+ftl2-ai-loop "nginx running" -i inventory.yml --dry-run --max-iterations 5
+ftl2-ai-loop "create linode" -s community.general.linode_v4.access_token=LINODE_TOKEN
 ```
-
-## Key Files
-
-| File | Purpose |
-|------|---------|
-| `ftl2_ai_loop.py` | Main script — observe, decide, execute, learn loop |
-| `rules/` | AI-generated rules (Python files with condition/action) |
-| `examples/` | Example usage scripts |
 
 ## FTL2 Module Reference
 
-The AI decides which modules to call. Common ones:
+FTL2 uses Ansible-compatible modules. Common ones:
 
 | Module | Use |
 |--------|-----|
 | `command` | Run a command, get stdout |
 | `shell` | Run shell command (supports pipes, redirects) |
 | `file` | Create/remove files and directories |
-| `copy` | Copy content to a file |
-| `template` | Render Jinja2 template to file |
+| `copy` | Copy files (does NOT support `content` param) |
 | `stat` | Check if file exists, get metadata |
-| `service` | Start/stop/restart services |
+| `service` | Start/stop/restart services (Linux only) |
 | `dnf` / `apt` | Install/remove packages |
 | `user` | Create/modify users |
 
-All Ansible modules are available via FQCN (e.g., `community.general.slack`).
+FQCN modules (e.g., `community.general.linode_v4`, `community.general.homebrew`) are accessed via dot notation on the `ftl` object.
+
+## Known Issues and Constraints
+
+- **`copy` module**: Does not support `content` parameter. Use `shell` with heredoc instead.
+- **Background processes**: `nohup &` hangs the shell module. Must use `setsid ... < /dev/null &` for daemons.
+- **Platform awareness**: The AI prompt includes guidance for macOS vs Linux module selection (homebrew vs dnf/apt, no service module on macOS).
+- **Rule quality**: AI-generated rules can reference nonexistent observer keys (always-true conditions) or use wrong syntax. Rule review/lifecycle management is not yet implemented.
+- **Multi-host**: Creating remote servers works, but configuring them requires inventory management and host targeting (`ftl.hostname.module()`) which is not yet fully supported.
+- **Module failures**: FTL2 module failures don't raise Python exceptions. `check_rules()` detects failures by comparing `len(ftl.errors)` before and after execution.
+
+## File Structure
+
+```
+ftl2_ai_loop.py          # Everything — observe, decide, execute, learn, CLI
+pyproject.toml           # Package config, hatchling build, ftl2 dependency
+examples/
+  nginx_example.py       # Programmatic usage with custom observers
+rules/
+  .gitkeep               # AI-generated rules go here
+```
