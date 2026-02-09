@@ -54,6 +54,9 @@ async def main():
         max_iterations=5,
         dry_run=args.dry_run,
         quiet=True,
+        secret_bindings={
+            "community.general.slack": {"token": "SLACK_TOKEN"},
+        },
     )
     sys.exit(0 if converged else 1)
 

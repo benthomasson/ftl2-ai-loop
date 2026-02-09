@@ -295,15 +295,23 @@ async def reconcile(
     max_iterations: int = 10,
     dry_run: bool = False,
     quiet: bool = False,
+    secret_bindings: dict | None = None,
+    state_file: str | None = None,
 ):
     """Run the AI reconciliation loop."""
     if observers is None:
         observers = DEFAULT_OBSERVERS
 
-    async with automation(
-        inventory=inventory,
-        quiet=quiet,
-    ) as ftl:
+    automation_kwargs = {
+        "inventory": inventory,
+        "quiet": quiet,
+    }
+    if secret_bindings:
+        automation_kwargs["secret_bindings"] = secret_bindings
+    if state_file:
+        automation_kwargs["state_file"] = state_file
+
+    async with automation(**automation_kwargs) as ftl:
         rules = load_rules(rules_dir)
         history: list[dict] = []
         extra_observers: list[dict] = []
