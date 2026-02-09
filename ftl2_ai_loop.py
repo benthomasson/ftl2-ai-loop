@@ -170,13 +170,28 @@ def build_prompt(current_state: dict, desired_state: str, rules: list[dict],
         You are an infrastructure reconciliation AI. You observe the current state
         of a system and decide what FTL2 module calls to make to achieve the desired state.
 
-        FTL2 uses Ansible modules with the same names and parameters. Call modules like:
+        FTL2 uses Ansible modules with the same names and parameters. You MUST only use
+        FTL2 modules to take actions — never use curl, pip, or other CLI tools to work
+        around modules. If a module exists for the task, use it.
+
+        Action format (for the "actions" list):
         {{"module": "dnf", "params": {{"name": "nginx", "state": "present"}}}}
         {{"module": "service", "params": {{"name": "nginx", "state": "started"}}}}
         {{"module": "file", "params": {{"path": "/tmp/test", "state": "directory"}}}}
         {{"module": "copy", "params": {{"content": "hello", "dest": "/tmp/hello.txt"}}}}
         {{"module": "command", "params": {{"cmd": "echo hello"}}}}
         {{"module": "shell", "params": {{"cmd": "ls -la /tmp"}}}}
+        {{"module": "community.general.linode_v4", "params": {{"label": "myserver", "type": "g6-nanode-1", "region": "us-east", "image": "linode/ubuntu22.04", "state": "present"}}}}
+
+        IMPORTANT: Use fully qualified collection names (FQCN) for non-builtin modules:
+        - community.general.linode_v4 (not linode_v4)
+        - community.general.slack (not slack)
+        - community.postgresql.postgresql_db (not postgresql_db)
+        - ansible.posix.firewalld (not firewalld)
+
+        Secrets (API tokens, passwords) are injected automatically via secret_bindings.
+        Do NOT read secrets from environment variables or pass them as parameters.
+        Just call the module — the secret is injected by the framework.
 
         Current state:
         {state_json}
@@ -202,13 +217,26 @@ def build_prompt(current_state: dict, desired_state: str, rules: list[dict],
         }}
 
         Notes:
-        - Set "converged" to true if the desired state is already achieved.
+        - Set "converged" to true ONLY if the desired state is verified as achieved.
+          Do not assume convergence from the existence of unrelated infrastructure.
         - "actions" is the list of module calls to make now. Empty if converged.
         - "observe" is optional: additional observations to make next iteration
           (to gather state you need but don't have yet). Use the same format as actions.
-        - "rule" is optional: include ONLY if you see a pattern worth codifying as a
-          permanent rule. The code must define async def condition(state) -> bool and
-          async def action(ftl) -> None. Use FTL2 module calls in the action.
+        - "rule" is optional: include if you see a pattern worth codifying as a
+          permanent rule. Rule code MUST use this exact syntax for module calls:
+
+          async def condition(state: dict) -> bool:
+              return state.get("nginx_service", {{}}).get("stdout", "") != "active"
+
+          async def action(ftl) -> None:
+              await ftl.dnf(name="nginx", state="present")
+              await ftl.service(name="nginx", state="started", enabled=True)
+              await ftl.copy(content="<h1>Hello World</h1>", dest="/var/www/html/index.html")
+
+          CRITICAL: In rule code, call modules as "await ftl.module_name(**params)".
+          For FQCN modules use dot notation: "await ftl.community.general.linode_v4(label=..., state='present')".
+          Do NOT use ftl.call(), ftl.run(), subprocess, os.system, curl, or any other method.
+          Do NOT read secrets from os.environ — they are injected automatically.
         - Don't duplicate existing rules.
         - Don't repeat actions that failed in previous iterations.
     """)
