@@ -190,7 +190,8 @@ def save_rule(rule_data: dict, rules_dir: str | Path) -> Path:
 
 def build_prompt(current_state: dict, desired_state: str, rules: list[dict],
                  history: list[dict], user_answers: list[dict] | None = None,
-                 rule_results: list[dict] | None = None) -> str:
+                 rule_results: list[dict] | None = None,
+                 iteration: int = 0, max_iterations: int = 10) -> str:
     """Build the prompt for the LLM decision step."""
     rules_summary = ""
     if rules:
@@ -303,6 +304,8 @@ def build_prompt(current_state: dict, desired_state: str, rules: list[dict],
         Current state:
         {state_json}
         {rules_summary}{history_summary}{answers_summary}{rule_results_summary}
+        Iteration budget: {iteration + 1} of {max_iterations} ({"use remaining iterations wisely" if iteration >= max_iterations // 2 else "early iterations, gather information as needed"})
+
         Desired state: {desired_state}
 
         Respond with ONLY a JSON object (no markdown, no explanation outside the JSON):
@@ -384,10 +387,11 @@ def extract_json(text: str) -> str:
 
 async def decide(current_state: dict, desired_state: str, rules: list[dict],
                  history: list[dict], user_answers: list[dict] | None = None,
-                 rule_results: list[dict] | None = None) -> dict:
+                 rule_results: list[dict] | None = None,
+                 iteration: int = 0, max_iterations: int = 10) -> dict:
     """Ask the AI what to do via claude -p."""
     prompt = build_prompt(current_state, desired_state, rules, history, user_answers,
-                          rule_results)
+                          rule_results, iteration, max_iterations)
 
     proc = await asyncio.create_subprocess_exec(
         "claude", "-p", prompt,
@@ -668,7 +672,7 @@ async def reconcile(
             # Decide
             print("Asking AI...")
             decision = await decide(current_state, desired_state, rules, history, user_answers,
-                                    rule_results)
+                                    rule_results, i, max_iterations)
 
             reasoning = decision.get("reasoning", "")
             if reasoning:
@@ -676,6 +680,13 @@ async def reconcile(
 
             if decision.get("converged"):
                 print(f"\nConverged after {i + 1} iteration(s).")
+                history.append({
+                    "iteration": i,
+                    "reasoning": reasoning,
+                    "converged": True,
+                    "actions": [],
+                    "results": [],
+                })
                 await post_convergence_review(
                     desired_state, history, i + 1, user_answers, rule_results,
                 )
@@ -689,6 +700,13 @@ async def reconcile(
                     "question": ask_data["question"],
                     "answer": answer,
                 })
+                history.append({
+                    "iteration": i,
+                    "reasoning": reasoning,
+                    "asked": ask_data["question"],
+                    "actions": [],
+                    "results": [],
+                })
                 print()
                 continue
 
@@ -700,6 +718,13 @@ async def reconcile(
             # Execute
             actions = decision.get("actions", [])
             if not actions:
+                history.append({
+                    "iteration": i,
+                    "reasoning": reasoning,
+                    "actions": [],
+                    "results": [],
+                    "observations_requested": len(extra_observers),
+                })
                 print("  No actions decided.\n")
                 continue
 
@@ -707,6 +732,7 @@ async def reconcile(
             results = await execute(ftl, actions, dry_run)
             history.append({
                 "iteration": i,
+                "reasoning": reasoning,
                 "actions": actions,
                 "results": results,
             })
