@@ -222,6 +222,17 @@ def build_prompt(current_state: dict, desired_state: str, rules: list[dict],
         Do NOT read secrets from environment variables or pass them as parameters.
         Just call the module — the secret is injected by the framework.
 
+        State file: If "_state_file" appears in the current state, it shows resources and
+        hosts that were saved in previous runs. You can save new resources to state by
+        including a "state_ops" list in your response:
+        "state_ops": [
+          {{"op": "add_resource", "name": "hello-ai", "data": {{"provider": "linode", "label": "hello-ai", "ipv4": ["1.2.3.4"]}}}},
+          {{"op": "add_host", "name": "hello-ai", "ansible_host": "1.2.3.4", "groups": ["webservers"]}},
+          {{"op": "remove", "name": "old-server"}}
+        ]
+        Use state to track created resources so they persist between runs and can be
+        cleaned up later. Check "_state_file" before creating resources to avoid duplicates.
+
         Current state:
         {state_json}
         {rules_summary}{history_summary}
@@ -389,6 +400,23 @@ async def reconcile(
             all_observers = observers + extra_observers
             current_state = await observe(ftl, all_observers)
 
+            # Include state file contents so the AI knows what resources exist
+            if hasattr(ftl, 'state') and ftl.state:
+                try:
+                    state_contents = {}
+                    resources = ftl.state.resources()
+                    if resources:
+                        state_contents["resources"] = resources
+                    hosts = ftl.state.hosts()
+                    if hosts:
+                        state_contents["hosts"] = {
+                            name: ftl.state.get_host(name) for name in hosts
+                        }
+                    if state_contents:
+                        current_state["_state_file"] = state_contents
+                except Exception:
+                    pass
+
             # Check rules first, but don't let rules loop forever.
             # If a rule handled the last iteration too, skip rules and
             # let the AI check for convergence.
@@ -430,6 +458,33 @@ async def reconcile(
                 "actions": actions,
                 "results": results,
             })
+
+            # State operations
+            state_ops = decision.get("state_ops", [])
+            if state_ops and hasattr(ftl, 'state') and ftl.state:
+                for op in state_ops:
+                    op_type = op.get("op")
+                    name = op.get("name", "")
+                    if not dry_run:
+                        try:
+                            if op_type == "add_resource":
+                                ftl.state.add_resource(name, op.get("data", {}))
+                                print(f"  State: added resource {name}")
+                            elif op_type == "add_host":
+                                ftl.state.add_host(
+                                    name,
+                                    ansible_host=op.get("ansible_host"),
+                                    ansible_user=op.get("ansible_user"),
+                                    groups=op.get("groups"),
+                                )
+                                print(f"  State: added host {name}")
+                            elif op_type == "remove":
+                                ftl.state.remove(name)
+                                print(f"  State: removed {name}")
+                        except Exception as e:
+                            print(f"  State op failed: {e}")
+                    else:
+                        print(f"  DRY RUN: would {op_type} {name}")
 
             # Learn
             rule_data = decision.get("rule")
