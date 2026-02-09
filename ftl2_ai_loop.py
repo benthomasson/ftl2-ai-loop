@@ -103,11 +103,17 @@ async def check_rules(rules: list[dict], state: dict, ftl, dry_run: bool = False
             if await rule["condition"](state):
                 print(f"  Rule matched: {rule['name']}")
                 if not dry_run:
+                    errors_before = len(ftl.errors) if hasattr(ftl, 'errors') else 0
                     try:
                         await rule["action"](ftl)
                     except Exception as e:
                         print(f"  Rule {rule['name']} action failed: {e}")
                         print(f"  Falling through to AI...")
+                        return False
+                    # Check if any module failures occurred during the action
+                    errors_after = len(ftl.errors) if hasattr(ftl, 'errors') else 0
+                    if errors_after > errors_before:
+                        print(f"  Rule {rule['name']} had module failures, falling through to AI...")
                         return False
                 else:
                     print(f"  DRY RUN: would execute rule {rule['name']}")
@@ -459,7 +465,24 @@ def cli():
                         help="Observe and decide but don't execute actions")
     parser.add_argument("--quiet", action="store_true",
                         help="Suppress FTL2 module output")
+    parser.add_argument("-s", "--secret", action="append", default=[], metavar="MODULE.PARAM=ENV_VAR",
+                        help="Bind a secret: community.general.linode_v4.access_token=LINODE_TOKEN")
+    parser.add_argument("--state-file", help="FTL2 state file for tracking resources")
     args = parser.parse_args()
+
+    # Parse secret bindings: "module.param=ENV_VAR" → {"module": {"param": "ENV_VAR"}}
+    secret_bindings: dict[str, dict[str, str]] = {}
+    for binding in args.secret:
+        if "=" not in binding:
+            parser.error(f"Invalid secret binding: {binding!r} (expected MODULE.PARAM=ENV_VAR)")
+        module_param, env_var = binding.rsplit("=", 1)
+        if "." not in module_param:
+            parser.error(f"Invalid secret binding: {binding!r} (MODULE.PARAM must contain a dot)")
+        # Split on last dot to get module pattern and param name
+        module_pattern, param = module_param.rsplit(".", 1)
+        if module_pattern not in secret_bindings:
+            secret_bindings[module_pattern] = {}
+        secret_bindings[module_pattern][param] = env_var
 
     converged = asyncio.run(reconcile(
         desired_state=args.desired_state,
@@ -468,6 +491,8 @@ def cli():
         rules_dir=args.rules_dir,
         dry_run=args.dry_run,
         quiet=args.quiet,
+        secret_bindings=secret_bindings or None,
+        state_file=args.state_file,
     ))
     sys.exit(0 if converged else 1)
 
