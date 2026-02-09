@@ -81,6 +81,12 @@ ftl2-ai-loop "complex setup" --max-iterations 5
 
 # Dev mode — AI reviews rules before they fire
 ftl2-ai-loop "nginx installed and running" --dev --rules-dir my-rules/
+
+# Continuous mode — re-reconcile every 60 seconds (default)
+ftl2-ai-loop "nginx installed and running" --continuous
+
+# Continuous with custom delay (5 minutes)
+ftl2-ai-loop "nginx installed and running" --continuous --delay 300
 ```
 
 ### CLI Options
@@ -96,6 +102,8 @@ ftl2-ai-loop "nginx installed and running" --dev --rules-dir my-rules/
 | `-s, --secret` | Bind a secret: `MODULE.PARAM=ENV_VAR` |
 | `--state-file` | JSON state file for tracking resources across runs |
 | `--dev` | Dev mode: AI reviews rules before they fire and sees results after |
+| `--continuous` | Run continuously, re-reconciling after each delay period |
+| `--delay` | Seconds between runs in continuous mode (default: 60) |
 
 ## Rules
 
@@ -142,6 +150,34 @@ Asking AI...
 ```
 
 This catches the rule quality issues discovered during testing — always-true conditions, wrong host targeting, bad module syntax — before they cause problems. Rule execution results (approved/denied, success/failure) accumulate and are visible to the AI in subsequent iterations, so it can decide to rewrite or delete problematic rules.
+
+## Continuous Mode
+
+With `--continuous`, the loop doesn't exit after convergence — it waits and re-reconciles, catching drift and fixing it automatically. Each run is a fresh reconciliation with fresh observations.
+
+```
+Continuous mode: reconciling every 60s (Ctrl+C to stop)
+
+============================================================
+Run #1 — 2026-02-09 18:00:00
+============================================================
+Desired state: nginx installed and running
+...
+Converged after 2 iteration(s).
+
+Run #1 converged. Next run in 60s...
+
+============================================================
+Run #2 — 2026-02-09 18:01:00
+============================================================
+Desired state: nginx installed and running
+...
+Converged after 1 iteration(s).
+
+Run #2 converged. Next run in 60s...
+```
+
+This turns ftl2-ai-loop into a persistent controller. Combine with `--state-file` to track resources across runs and `--dev` to review rules as they develop.
 
 ## Ask User
 

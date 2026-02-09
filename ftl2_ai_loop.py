@@ -717,6 +717,34 @@ async def reconcile(
         return False
 
 
+# --- Continuous Mode ---
+
+
+async def run_continuous(reconcile_kwargs: dict, delay: int):
+    """Run the reconciliation loop continuously with a delay between runs."""
+    run_count = 0
+    print(f"Continuous mode: reconciling every {delay}s (Ctrl+C to stop)\n")
+    try:
+        while True:
+            run_count += 1
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            print(f"{'=' * 60}")
+            print(f"Run #{run_count} — {timestamp}")
+            print(f"{'=' * 60}")
+
+            try:
+                converged = await reconcile(**reconcile_kwargs)
+                status = "converged" if converged else "did not converge"
+            except Exception as e:
+                print(f"\nRun #{run_count} failed: {e}")
+                status = "error"
+
+            print(f"\nRun #{run_count} {status}. Next run in {delay}s...\n")
+            await asyncio.sleep(delay)
+    except KeyboardInterrupt:
+        print(f"\nStopped after {run_count} run(s).")
+
+
 # --- CLI ---
 
 
@@ -746,6 +774,10 @@ def cli():
     parser.add_argument("--state-file", help="FTL2 state file for tracking resources")
     parser.add_argument("--dev", action="store_true",
                         help="Dev mode: AI reviews rules before they fire and sees results after")
+    parser.add_argument("--continuous", action="store_true",
+                        help="Run continuously, re-reconciling after each delay period")
+    parser.add_argument("--delay", type=int, default=60,
+                        help="Seconds between reconciliation runs in continuous mode (default: 60)")
     args = parser.parse_args()
 
     # Parse secret bindings: "module.param=ENV_VAR" → {"module": {"param": "ENV_VAR"}}
@@ -762,7 +794,7 @@ def cli():
             secret_bindings[module_pattern] = {}
         secret_bindings[module_pattern][param] = env_var
 
-    converged = asyncio.run(reconcile(
+    reconcile_kwargs = dict(
         desired_state=args.desired_state,
         inventory=args.inventory,
         max_iterations=args.max_iterations,
@@ -772,8 +804,13 @@ def cli():
         secret_bindings=secret_bindings or None,
         state_file=args.state_file,
         dev=args.dev,
-    ))
-    sys.exit(0 if converged else 1)
+    )
+
+    if args.continuous:
+        asyncio.run(run_continuous(reconcile_kwargs, args.delay))
+    else:
+        converged = asyncio.run(reconcile(**reconcile_kwargs))
+        sys.exit(0 if converged else 1)
 
 
 if __name__ == "__main__":
