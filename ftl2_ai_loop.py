@@ -288,8 +288,13 @@ def build_prompt(current_state: dict, desired_state: str, rules: list[dict],
         it with "host" in subsequent actions. After creating a server (e.g., via linode_v4),
         you MUST add_host with its IP before you can run modules on it. Example workflow:
         1. Action: create server via community.general.linode_v4 → get IP from result
-        2. State op: add_host with the IP
+        2. State op: add_host with the IP and ansible_user
         3. Next iteration: use {{"host": "hello-ai", "module": "dnf", ...}} to run on it
+        ALWAYS specify "ansible_user" in add_host (usually "root" for cloud servers).
+        Without it, FTL2 defaults to the local username which will fail on remote hosts.
+        You can re-register a host to fix parameters — add_host overwrites existing entries.
+        If SSH authentication fails, re-register the host with the correct ansible_user
+        before retrying module calls. Do NOT keep retrying the same failing module.
         Check "_state_file" before creating resources to avoid duplicates.
 
         Current state:
