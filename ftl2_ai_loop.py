@@ -260,6 +260,28 @@ def save_rule(rule_data: dict, rules_dir: str | Path) -> Path:
 # --- Decide (LLM) ---
 
 
+def _no_action_warning(history: list[dict]) -> str:
+    """Warn the AI if the previous iteration(s) had no actions."""
+    if not history:
+        return ""
+    consecutive = 0
+    for entry in reversed(history):
+        if not entry.get("actions"):
+            consecutive += 1
+        else:
+            break
+    if consecutive == 0:
+        return ""
+    if consecutive == 1:
+        return ("WARNING: You took NO ACTIONS last iteration. You have observation "
+                "results now — either act on them or converge. Do not request more "
+                "observations without acting.")
+    return (f"WARNING: You have taken NO ACTIONS for {consecutive} consecutive "
+            f"iterations. You are wasting iterations on repeated observations. "
+            f"ACT NOW or CONVERGE. If you cannot determine the right actions, "
+            f"ask the user for help.")
+
+
 def build_prompt(current_state: dict, desired_state: str, rules: list[dict],
                  history: list[dict], user_answers: list[dict] | None = None,
                  rule_results: list[dict] | None = None,
@@ -394,6 +416,7 @@ def build_prompt(current_state: dict, desired_state: str, rules: list[dict],
         {state_json}
         {rules_summary}{history_summary}{answers_summary}{rule_results_summary}
         Iteration budget: {iteration + 1} of {max_iterations} ({"use remaining iterations wisely" if iteration >= max_iterations // 2 else "early iterations, gather information as needed"})
+        {_no_action_warning(history)}
 
         Desired state: {desired_state}
 
