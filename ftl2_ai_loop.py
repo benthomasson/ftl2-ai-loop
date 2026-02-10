@@ -880,6 +880,7 @@ async def reconcile(
     dev: bool = False,
     initial_observations: list[dict] | None = None,
     audit_log: str | None = None,
+    review_log: str | None = None,
 ):
     """Run the AI reconciliation loop.
 
@@ -1043,6 +1044,7 @@ async def reconcile(
                 )
                 await post_convergence_review(
                     desired_state, history, i + 1, user_answers, rule_results,
+                    converged=True, review_log=review_log,
                 )
                 return {"converged": True, "next_observations": next_obs}
 
@@ -1130,6 +1132,7 @@ async def reconcile(
         _write_audit_log(history, converged=False, iterations=max_iterations)
         await post_convergence_review(
             desired_state, history, max_iterations, user_answers, rule_results,
+            converged=False, review_log=review_log,
         )
         return {"converged": False, "next_observations": []}
 
@@ -1233,6 +1236,8 @@ async def post_convergence_review(
     iterations: int,
     user_answers: list[dict],
     rule_results: list[dict],
+    converged: bool = True,
+    review_log: str | None = None,
 ):
     """Ask the AI to review its own performance and suggest feature requests."""
     history_json = json.dumps(history, indent=2, default=str)
@@ -1280,6 +1285,134 @@ async def post_convergence_review(
         print(f"\n--- AI Self-Review ---")
         print(review)
         print(f"--- End Review ---\n")
+
+        if review_log:
+            _write_review_log(
+                review_log, review, desired_state, history,
+                iterations, converged, user_answers, rule_results,
+            )
+
+
+def _write_review_log(
+    review_dir: str,
+    review: str,
+    desired_state: str,
+    history: list[dict],
+    iterations: int,
+    converged: bool,
+    user_answers: list[dict],
+    rule_results: list[dict],
+):
+    """Write a self-review to a numbered markdown file with run metadata."""
+    try:
+        dir_path = Path(review_dir)
+        dir_path.mkdir(parents=True, exist_ok=True)
+
+        # Find next review number
+        existing = sorted(dir_path.glob("review-*.md"))
+        if existing:
+            last = existing[-1].stem  # e.g., "review-003"
+            try:
+                n = int(last.split("-")[1]) + 1
+            except (IndexError, ValueError):
+                n = len(existing) + 1
+        else:
+            n = 1
+
+        ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+
+        # Summarize actions: count total, changed, failed per host
+        action_count = 0
+        changed_count = 0
+        failed_count = 0
+        hosts_used = set()
+        modules_used = []
+        for entry in history:
+            for act, res in zip(entry.get("actions", []), entry.get("results", [])):
+                action_count += 1
+                host = act.get("host", "localhost")
+                hosts_used.add(host)
+                modules_used.append(act.get("module", "unknown"))
+                result = res.get("result", {})
+                if isinstance(result, dict):
+                    if result.get("error"):
+                        failed_count += 1
+                    elif result.get("changed"):
+                        changed_count += 1
+
+        # Build markdown
+        lines = [
+            f"# Self-Review #{n}",
+            f"",
+            f"**Date:** {ts}",
+            f"**Converged:** {'Yes' if converged else 'No'}",
+            f"**Iterations:** {iterations}",
+            f"**Actions:** {action_count} total, {changed_count} changed, {failed_count} failed",
+            f"**Hosts:** {', '.join(sorted(hosts_used)) or 'none'}",
+            f"",
+            f"## Desired State",
+            f"",
+            f"{desired_state}",
+            f"",
+            f"## Review",
+            f"",
+            review,
+            f"",
+            f"## Action Log",
+            f"",
+        ]
+
+        for entry in history:
+            iteration = entry.get("iteration", "?")
+            reasoning = entry.get("reasoning", "")
+            lines.append(f"### Iteration {iteration}")
+            if reasoning:
+                lines.append(f"")
+                lines.append(f"**Reasoning:** {reasoning}")
+            actions = entry.get("actions", [])
+            results = entry.get("results", [])
+            if not actions:
+                lines.append(f"")
+                lines.append(f"No actions.")
+            else:
+                lines.append(f"")
+                lines.append(f"| # | Module | Host | Changed | Error |")
+                lines.append(f"|---|--------|------|---------|-------|")
+                for j, (act, res) in enumerate(zip(actions, results), 1):
+                    mod = act.get("module", "?")
+                    host = act.get("host", "localhost")
+                    result = res.get("result", {})
+                    if isinstance(result, dict):
+                        ch = "yes" if result.get("changed") else "no"
+                        err = result.get("error", "")
+                    else:
+                        ch = "?"
+                        err = ""
+                    err_short = (err[:60] + "...") if len(err) > 60 else err
+                    lines.append(f"| {j} | `{mod}` | {host} | {ch} | {err_short} |")
+            lines.append(f"")
+
+        if user_answers:
+            lines.append(f"## User Questions")
+            lines.append(f"")
+            for qa in user_answers:
+                lines.append(f"- **Q:** {qa.get('question', '?')}")
+                lines.append(f"  **A:** {qa.get('answer', '?')}")
+            lines.append(f"")
+
+        if rule_results:
+            lines.append(f"## Rule Results")
+            lines.append(f"")
+            for rr in rule_results:
+                lines.append(f"- {json.dumps(rr, default=str)}")
+            lines.append(f"")
+
+        filename = f"review-{n:03d}.md"
+        (dir_path / filename).write_text("\n".join(lines))
+        print(f"Review written to {review_dir}/{filename}")
+
+    except Exception as e:
+        print(f"Failed to write review log: {e}")
 
 
 # --- Continuous Mode ---
@@ -1417,6 +1550,7 @@ def cli():
     parser.add_argument("--state-file", help="FTL2 state file for tracking resources")
     parser.add_argument("--audit-log", help="JSON file to append action history after each run")
     parser.add_argument("--prompt-log", help="Directory to write prompt/response pairs (one file per call)")
+    parser.add_argument("--review-log", help="Directory to write self-review markdown files (one per run)")
     parser.add_argument("--dev", action="store_true",
                         help="Dev mode: AI reviews rules before they fire and sees results after")
     parser.add_argument("--continuous", action="store_true",
@@ -1455,6 +1589,7 @@ def cli():
         state_file=args.state_file,
         dev=args.dev,
         audit_log=args.audit_log,
+        review_log=args.review_log,
     )
 
     try:
