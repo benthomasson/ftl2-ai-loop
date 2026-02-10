@@ -24,6 +24,7 @@ import json
 import re
 import sys
 import textwrap
+import traceback
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -127,6 +128,7 @@ async def observe(ftl, observers: list[dict]) -> dict:
 
         except Exception as e:
             state[obs["name"]] = {"error": str(e)}
+            traceback.print_exc()
     return state
 
 
@@ -248,6 +250,7 @@ async def check_rules(rules: list[dict], state: dict, ftl, dry_run: bool = False
                         await rule["action"](ftl)
                     except Exception as e:
                         print(f"  Rule {rule['name']} action failed: {e}")
+                        traceback.print_exc()
                         print(f"  Falling through to AI...")
                         return False
                     # Check if any module failures occurred during the action
@@ -260,6 +263,7 @@ async def check_rules(rules: list[dict], state: dict, ftl, dry_run: bool = False
                 return True
         except Exception as e:
             print(f"  Rule {rule['name']} condition error: {e}")
+            traceback.print_exc()
     return False
 
 
@@ -271,6 +275,7 @@ async def find_matching_rule(rules: list[dict], state: dict) -> dict | None:
                 return rule
         except Exception as e:
             print(f"  Rule {rule['name']} condition error: {e}")
+            traceback.print_exc()
     return None
 
 
@@ -282,6 +287,7 @@ async def execute_rule(rule: dict, ftl, dry_run: bool = False) -> tuple[bool, st
     try:
         await rule["action"](ftl)
     except Exception as e:
+        traceback.print_exc()
         return False, str(e)
     errors_after = len(ftl.errors) if hasattr(ftl, 'errors') else 0
     if errors_after > errors_before:
@@ -756,6 +762,7 @@ async def execute(ftl, actions: list[dict], dry_run: bool = False) -> list[dict]
             results.append({"module": module_name, "host": host, "result": result})
         except Exception as e:
             print(f"    FAILED: {e}")
+            traceback.print_exc()
             results.append({"module": module_name, "host": host, "result": {"error": str(e)}})
 
     return results
@@ -837,7 +844,7 @@ async def reconcile(
                     if state_contents:
                         current_state["_state_file"] = state_contents
                 except Exception:
-                    pass
+                    traceback.print_exc()
 
             # Check rules first, but don't let rules loop forever.
             # If a rule handled the last iteration too, skip rules and
@@ -985,6 +992,7 @@ async def reconcile(
                                 print(f"  State: removed {name}")
                         except Exception as e:
                             print(f"  State op failed: {e}")
+                            traceback.print_exc()
                     else:
                         print(f"  DRY RUN: would {op_type} {name}")
 
@@ -1091,7 +1099,6 @@ async def run_continuous(reconcile_kwargs: dict, delay: int):
                 next_observations = result.get("next_observations", [])
                 status = "converged" if converged else "did not converge"
             except Exception as e:
-                import traceback
                 print(f"\nRun #{run_count} failed: {e}")
                 traceback.print_exc()
                 next_observations = []
