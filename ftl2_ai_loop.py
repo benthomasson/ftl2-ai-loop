@@ -491,7 +491,8 @@ def _no_action_warning(history: list[dict]) -> str:
 def build_prompt(current_state: dict, desired_state: str, rules: list[dict],
                  history: list[dict], user_answers: list[dict] | None = None,
                  rule_results: list[dict] | None = None,
-                 iteration: int = 0, max_iterations: int = 10) -> str:
+                 iteration: int = 0, max_iterations: int = 10,
+                 prior_increments: list[dict] | None = None) -> str:
     """Build the prompt for the LLM decision step."""
     rules_summary = ""
     if rules:
@@ -528,6 +529,18 @@ def build_prompt(current_state: dict, desired_state: str, rules: list[dict],
             else:
                 entries.append(f"  Rule \"{r['rule']}\" fired but FAILED: {r.get('detail', 'unknown error')}")
         rule_results_summary = f"\nRule execution results from previous iterations:\n" + "\n".join(entries) + "\n"
+
+    prior_increments_summary = ""
+    if prior_increments:
+        entries = []
+        for inc in prior_increments:
+            status = "converged" if inc.get("converged") else "did not converge"
+            entries.append(f'  - Increment {inc["n"]}: "{inc["desired_state"]}" ({status})')
+        prior_increments_summary = (
+            f"\nPrevious work completed (incremental mode):\n"
+            + "\n".join(entries)
+            + "\n\nThe current increment builds on this previous work. Do NOT redo previous actions.\n"
+        )
 
     state_json = json.dumps(current_state, indent=2, default=str)
 
@@ -628,7 +641,7 @@ def build_prompt(current_state: dict, desired_state: str, rules: list[dict],
 
         Current state:
         {state_json}
-        {rules_summary}{history_summary}{answers_summary}{rule_results_summary}
+        {rules_summary}{history_summary}{answers_summary}{rule_results_summary}{prior_increments_summary}
         Iteration budget: {iteration + 1} of {max_iterations} ({"use remaining iterations wisely" if iteration >= max_iterations // 2 else "early iterations, gather information as needed"})
         {_no_action_warning(history)}{_convergence_hint(history)}
 
@@ -696,10 +709,11 @@ def extract_json(text: str) -> str:
 async def decide(current_state: dict, desired_state: str, rules: list[dict],
                  history: list[dict], user_answers: list[dict] | None = None,
                  rule_results: list[dict] | None = None,
-                 iteration: int = 0, max_iterations: int = 10) -> dict:
+                 iteration: int = 0, max_iterations: int = 10,
+                 prior_increments: list[dict] | None = None) -> dict:
     """Ask the AI what to do via claude -p."""
     prompt = build_prompt(current_state, desired_state, rules, history, user_answers,
-                          rule_results, iteration, max_iterations)
+                          rule_results, iteration, max_iterations, prior_increments)
 
     proc = await asyncio.create_subprocess_exec(
         "claude", "-p", prompt,
@@ -958,14 +972,16 @@ async def reconcile(
     audit_log: str | None = None,
     review_log: str | None = None,
     script_log: str | None = None,
+    prior_increments: list[dict] | None = None,
 ):
     """Run the AI reconciliation loop.
 
     Returns a dict with:
         converged (bool): Whether the desired state was achieved
         next_observations (list): Observations the AI wants run at the start of the next run
+        history (list): Action history from this run
     """
-    def _write_audit_log(history, converged, iterations):
+    def _write_audit_log(history, converged, iterations, increments=None):
         """Write the action history to a JSON audit log file."""
         if not audit_log:
             return
@@ -978,13 +994,16 @@ async def reconcile(
                     entries = json.loads(log_path.read_text())
                 except (json.JSONDecodeError, ValueError):
                     entries = []
-            entries.append({
+            entry = {
                 "timestamp": datetime.now(timezone.utc).isoformat(),
                 "desired_state": desired_state,
                 "converged": converged,
                 "iterations": iterations,
                 "history": history,
-            })
+            }
+            if increments:
+                entry["increments"] = increments
+            entries.append(entry)
             log_path.write_text(json.dumps(entries, indent=2, default=str))
             print(f"Audit log written to {audit_log}")
         except Exception as e:
@@ -1097,7 +1116,7 @@ async def reconcile(
             # Decide
             print("Asking AI...")
             decision = await decide(current_state, desired_state, rules, history, user_answers,
-                                    rule_results, i, max_iterations)
+                                    rule_results, i, max_iterations, prior_increments)
 
             reasoning = decision.get("reasoning", "")
             if reasoning:
@@ -1134,7 +1153,7 @@ async def reconcile(
                     )
                 else:
                     print("  Skipping review (no actions taken).")
-                return {"converged": True, "next_observations": next_obs}
+                return {"converged": True, "next_observations": next_obs, "history": history}
 
             # Ask the user a question if the AI needs input
             ask_data = decision.get("ask")
@@ -1222,7 +1241,7 @@ async def reconcile(
             desired_state, history, max_iterations, user_answers, rule_results,
             converged=False, review_log=review_log,
         )
-        return {"converged": False, "next_observations": []}
+        return {"converged": False, "next_observations": [], "history": history}
 
 
 # --- Post-Convergence Script Generation ---
@@ -1232,6 +1251,7 @@ def generate_script_from_history(
     history: list[dict],
     desired_state: str,
     inventory: str | None = None,
+    increments: list[dict] | None = None,
 ) -> str:
     """Mechanically generate a FTL2 script from the action history.
 
@@ -1262,6 +1282,13 @@ def generate_script_from_history(
     # Track hosts that need registration
     registered_hosts = set()
     had_actions = False
+    current_increment = None
+
+    # Build increment lookup by number
+    increment_map = {}
+    if increments:
+        for inc in increments:
+            increment_map[inc["n"]] = inc
 
     for entry in history:
         iteration = entry.get("iteration", "?")
@@ -1271,6 +1298,15 @@ def generate_script_from_history(
 
         if not actions:
             continue
+
+        # Insert increment comment when we enter a new increment
+        entry_increment = entry.get("increment_n")
+        if entry_increment and entry_increment != current_increment:
+            current_increment = entry_increment
+            inc = increment_map.get(entry_increment, {})
+            inc_desc = inc.get("desired_state", f"Increment {entry_increment}")
+            lines.append(f'')
+            lines.append(f'        # --- Increment {entry_increment}: {inc_desc} ---')
 
         lines.append(f'')
         lines.append(f'        # Iteration {iteration}')
@@ -1330,6 +1366,7 @@ async def post_convergence_script_generation(
     history: list[dict],
     inventory: str | None = None,
     script_log: str | None = None,
+    increments: list[dict] | None = None,
 ):
     """Generate a FTL2 script from the action history, then have AI review it."""
     # Only generate scripts when there were actual actions
@@ -1338,7 +1375,7 @@ async def post_convergence_script_generation(
         return
 
     # Step 1: Mechanically generate the script
-    draft = generate_script_from_history(history, desired_state, inventory)
+    draft = generate_script_from_history(history, desired_state, inventory, increments)
 
     # Step 2: Have the AI review and improve it
     prompt = textwrap.dedent(f"""\
@@ -1792,6 +1829,77 @@ async def run_continuous(reconcile_kwargs: dict, delay: int):
         print(f"\nStopped after {run_count} run(s).")
 
 
+# --- Incremental Mode ---
+
+
+async def run_incremental(reconcile_kwargs: dict):
+    """Run the reconciliation loop incrementally, prompting for new work after each convergence."""
+    increments = []
+    all_history = []
+    next_observations = None
+
+    desired_state = reconcile_kwargs["desired_state"]
+    n = 1
+
+    try:
+        while True:
+            print(f"\n=== Increment {n} ===")
+            print(f"Desired state: {desired_state}")
+            increments.append({"n": n, "desired_state": desired_state})
+
+            # Build kwargs for this increment, overriding desired_state and
+            # injecting prior_increments and initial_observations
+            kwargs = {
+                **reconcile_kwargs,
+                "desired_state": desired_state,
+                "prior_increments": increments[:-1] if len(increments) > 1 else None,
+            }
+            if next_observations:
+                kwargs["initial_observations"] = next_observations
+
+            result = await reconcile(**kwargs)
+
+            increments[-1]["converged"] = result["converged"]
+            increments[-1]["iterations"] = len(result.get("history", []))
+
+            # Tag history entries with increment number before accumulating
+            for entry in result.get("history", []):
+                entry["increment_n"] = n
+            all_history.extend(result.get("history", []))
+
+            next_observations = result.get("next_observations")
+            n += 1
+
+            # Prompt for next increment
+            try:
+                next_state = input("\nWhat would you like to do next? (empty to quit): ").strip()
+            except (EOFError, KeyboardInterrupt):
+                break
+            if not next_state:
+                break
+            desired_state = next_state
+
+    except KeyboardInterrupt:
+        pass
+
+    print(f"\nDone. {len(increments)} increment(s) completed.")
+
+    # Generate a combined script covering all increments
+    if reconcile_kwargs.get("script_log") and all_history:
+        total_actions = sum(len(h.get("actions", [])) for h in all_history)
+        if total_actions > 0:
+            combined_desired = "Incremental build: " + "; ".join(
+                i["desired_state"] for i in increments
+            )
+            await post_convergence_script_generation(
+                desired_state=combined_desired,
+                history=all_history,
+                inventory=reconcile_kwargs.get("inventory"),
+                script_log=reconcile_kwargs["script_log"],
+                increments=increments,
+            )
+
+
 # --- CLI ---
 
 
@@ -1887,8 +1995,11 @@ def cli():
     parser.add_argument("--script-log", help="Directory to write generated FTL2 scripts (one per run)")
     parser.add_argument("--dev", action="store_true",
                         help="Dev mode: AI reviews rules before they fire and sees results after")
-    parser.add_argument("--continuous", action="store_true",
-                        help="Run continuously, re-reconciling after each delay period")
+    mode_group = parser.add_mutually_exclusive_group()
+    mode_group.add_argument("--continuous", action="store_true",
+                            help="Run continuously, re-reconciling after each delay period")
+    mode_group.add_argument("--incremental", action="store_true",
+                            help="Prompt for additional work after each convergence")
     parser.add_argument("--delay", type=int, default=60,
                         help="Seconds between reconciliation runs in continuous mode (default: 60)")
     args = parser.parse_args()
@@ -1930,6 +2041,8 @@ def cli():
     try:
         if args.continuous:
             asyncio.run(run_continuous(reconcile_kwargs, args.delay))
+        elif args.incremental:
+            asyncio.run(run_incremental(reconcile_kwargs))
         else:
             result = asyncio.run(reconcile(**reconcile_kwargs))
             sys.exit(0 if result["converged"] else 1)
