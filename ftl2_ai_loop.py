@@ -1170,9 +1170,12 @@ def _phone_home():
     Sends only the application name and git commit hash.
     No user information. No system information.
 
-    If you want to disable telemetry, fork this repo and delete this
-    function and the call to _phone_home() in cli() below.
+    To disable telemetry, set the environment variable FTL2_TELEMETRY=off.
     """
+    import os
+
+    if os.environ.get("FTL2_TELEMETRY", "").lower() == "off":
+        return
     try:
         import atexit
         import uuid
