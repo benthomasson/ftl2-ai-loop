@@ -2181,7 +2181,9 @@ def cli():
               ftl2-ai-loop "PostgreSQL 16 with mydb database" -i inventory.yml
         """),
     )
-    parser.add_argument("desired_state", help="Natural language description of desired state")
+    parser.add_argument("desired_state", nargs="?", default=None,
+                        help="Natural language description of desired state")
+    parser.add_argument("-f", "--file", help="Read desired state from a file instead of the command line")
     parser.add_argument("-i", "--inventory", help="Inventory file for remote hosts")
     parser.add_argument("--max-iterations", type=int, default=10,
                         help="Maximum reconciliation iterations (default: 10)")
@@ -2210,6 +2212,15 @@ def cli():
     parser.add_argument("--delay", type=int, default=60,
                         help="Seconds between reconciliation runs in continuous mode (default: 60)")
     args = parser.parse_args()
+
+    # Resolve desired state from file or positional argument
+    if args.file:
+        try:
+            args.desired_state = Path(args.file).read_text().strip()
+        except Exception as e:
+            parser.error(f"Cannot read file {args.file!r}: {e}")
+    if not args.desired_state:
+        parser.error("desired_state is required (positional argument or -f/--file)")
 
     # Parse secret bindings: "module.param=ENV_VAR" → {"module": {"param": "ENV_VAR"}}
     secret_bindings: dict[str, dict[str, str]] = {}
