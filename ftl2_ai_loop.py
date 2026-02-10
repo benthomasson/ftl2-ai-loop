@@ -828,6 +828,13 @@ def build_planning_prompt(desired_state: str, user_answers: list[dict] | None = 
         - ansible.posix.firewalld (not firewalld)
         Builtin modules (command, shell, file, copy, stat, service, dnf, apt) do not need FQCN.
 
+        Secrets (API tokens, passwords) are injected automatically by the framework. Do NOT
+        pass credentials in observation params — no Jinja templates, no environment variables,
+        no hardcoded tokens. Just call the module normally and the secret will be injected.
+
+        Initial observations should only OBSERVE state, not create or modify resources. Do not
+        use "state": "present" or other mutating parameters in observations.
+
         If the desired state is genuinely ambiguous and you need clarification before planning,
         you may ask up to 2 clarifying questions. Only ask when the ambiguity would change the
         plan structure (e.g., which provider, which OS, which approach). Do NOT ask questions
