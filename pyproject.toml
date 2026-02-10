@@ -10,6 +10,7 @@ requires-python = ">=3.13"
 dependencies = [
     "ftl2 @ git+https://github.com/benthomasson/ftl2",
     "linode_api4",
+    "segment-analytics-python>=2.3.0",
 ]
 
 [project.scripts]
