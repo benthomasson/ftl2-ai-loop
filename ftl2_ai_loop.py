@@ -2068,6 +2068,36 @@ async def run_incremental(reconcile_kwargs: dict):
             )
 
 
+# --- Plan Only Mode ---
+
+
+async def run_plan_only(desired_state: str):
+    """Run the planning phase and print the result without executing."""
+    print("Planning...")
+    result = await plan(desired_state)
+
+    increments = result["increments"]
+    initial_observations = result.get("initial_observations", [])
+
+    print(f"\n  Plan: {len(increments)} increment(s)")
+    for j, inc_state in enumerate(increments, 1):
+        print(f"    {j}. {inc_state}")
+
+    if initial_observations:
+        print(f"\n  Initial observations for first increment:")
+        for obs in initial_observations:
+            host = obs.get("host")
+            module = obs.get("module", "?")
+            params = obs.get("params", {})
+            params_str = ", ".join(f"{k}={v!r}" for k, v in params.items())
+            if host:
+                print(f"    - {host}: {module}({params_str}) as '{obs.get('name', '?')}'")
+            else:
+                print(f"    - {module}({params_str}) as '{obs.get('name', '?')}'")
+
+    print()
+
+
 # --- CLI ---
 
 
@@ -2168,6 +2198,8 @@ def cli():
                             help="Run continuously, re-reconciling after each delay period")
     mode_group.add_argument("--incremental", action="store_true",
                             help="Prompt for additional work after each convergence")
+    mode_group.add_argument("--plan-only", action="store_true",
+                            help="Run the planning phase and show increments without executing")
     parser.add_argument("--delay", type=int, default=60,
                         help="Seconds between reconciliation runs in continuous mode (default: 60)")
     args = parser.parse_args()
@@ -2211,6 +2243,8 @@ def cli():
             asyncio.run(run_continuous(reconcile_kwargs, args.delay))
         elif args.incremental:
             asyncio.run(run_incremental(reconcile_kwargs))
+        elif args.plan_only:
+            asyncio.run(run_plan_only(args.desired_state))
         else:
             result = asyncio.run(reconcile(**reconcile_kwargs))
             sys.exit(0 if result["converged"] else 1)
