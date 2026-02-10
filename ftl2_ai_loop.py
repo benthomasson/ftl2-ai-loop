@@ -912,6 +912,14 @@ async def execute(ftl, actions: list[dict], dry_run: bool = False) -> list[dict]
                                     "ipv4": ipv4_list,
                                 })
                             print(f"    Auto-registered host: {label} ({ip})")
+                            # Wait for SSH before allowing subsequent actions
+                            # to target this host.
+                            print(f"    Waiting for SSH on {ip}...")
+                            try:
+                                await ftl.wait_for(host=ip, port=22, timeout=180, delay=5, sleep=5)
+                                print(f"    SSH ready on {label} ({ip})")
+                            except Exception as wait_err:
+                                print(f"    Warning: SSH wait failed for {label}: {wait_err}")
                         except Exception as e:
                             print(f"    Warning: failed to auto-register host {label}: {e}")
         except Exception as e:
