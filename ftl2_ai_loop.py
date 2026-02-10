@@ -974,6 +974,7 @@ async def reconcile(
     script_log: str | None = None,
     prior_increments: list[dict] | None = None,
     skip_rule_generation: bool = False,
+    increments: list[dict] | None = None,
 ):
     """Run the AI reconciliation loop.
 
@@ -1135,7 +1136,7 @@ async def reconcile(
                     "actions": [],
                     "results": [],
                 })
-                _write_audit_log(history, converged=True, iterations=i + 1)
+                _write_audit_log(history, converged=True, iterations=i + 1, increments=increments)
                 if not skip_rule_generation:
                     await post_convergence_rule_generation(
                         desired_state, history, rules, rules_dir, current_state,
@@ -1239,7 +1240,7 @@ async def reconcile(
             await asyncio.sleep(2)
 
         print(f"\nDid not converge after {max_iterations} iterations.")
-        _write_audit_log(history, converged=False, iterations=max_iterations)
+        _write_audit_log(history, converged=False, iterations=max_iterations, increments=increments)
         print("Reviewing run...")
         await post_convergence_review(
             desired_state, history, max_iterations, user_answers, rule_results,
@@ -1857,6 +1858,7 @@ async def run_incremental(reconcile_kwargs: dict):
                 "desired_state": desired_state,
                 "prior_increments": increments[:-1] if len(increments) > 1 else None,
                 "skip_rule_generation": True,
+                "increments": increments,
             }
             if next_observations:
                 kwargs["initial_observations"] = next_observations
