@@ -884,6 +884,16 @@ async def execute(ftl, actions: list[dict], dry_run: bool = False) -> list[dict]
             for part in module_name.split("."):
                 module_fn = getattr(module_fn, part)
             result = await module_fn(**params)
+            # Normalize result to a plain dict for serialization.
+            if isinstance(result, list):
+                result = [
+                    r.output if hasattr(r, 'output') and not isinstance(r, dict) else r
+                    for r in result
+                ]
+                if len(result) == 1:
+                    result = result[0]
+            elif hasattr(result, 'output') and not isinstance(result, dict):
+                result = result.output
             changed = result.get("changed", False) if isinstance(result, dict) else False
             print(f"    ok (changed={changed})")
             results.append({"module": module_name, "host": host, "result": result})
