@@ -29,6 +29,71 @@ from pathlib import Path
 
 from ftl2 import automation
 
+REPO_URL = "https://github.com/benthomasson/ftl2-ai-loop"
+UPDATE_EXIT_CODE = 42
+
+
+# --- Version Check ---
+
+
+def _get_startup_commit() -> str | None:
+    """Get the git commit hash this package was installed from."""
+    try:
+        from importlib.metadata import metadata
+        # uvx installs store the source URL in metadata
+        meta = metadata("ftl2-ai-loop")
+        # Check direct_url.json for the commit hash
+        import json
+        from importlib.resources import files
+        import pathlib
+        # Find the dist-info directory
+        import importlib.metadata
+        dist = importlib.metadata.distribution("ftl2-ai-loop")
+        direct_url_path = dist._path.parent / dist._path.name / "direct_url.json"
+        if not direct_url_path.exists():
+            # Try alternative path
+            for f in dist.files or []:
+                if f.name == "direct_url.json":
+                    direct_url_path = pathlib.Path(f.locate())
+                    break
+        if direct_url_path.exists():
+            data = json.loads(direct_url_path.read_text())
+            return data.get("vcs_info", {}).get("commit_id")
+    except Exception:
+        pass
+    return None
+
+
+async def _get_latest_commit() -> str | None:
+    """Check the latest commit on the remote repo via git ls-remote."""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "git", "ls-remote", REPO_URL, "HEAD",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, _ = await proc.communicate()
+        if proc.returncode == 0 and stdout:
+            # Format: "<hash>\tHEAD\n"
+            return stdout.decode().split()[0]
+    except Exception:
+        pass
+    return None
+
+
+async def _check_for_update(startup_commit: str | None) -> bool:
+    """Return True if a newer version is available."""
+    if not startup_commit:
+        return False
+    latest = await _get_latest_commit()
+    if not latest:
+        return False
+    if latest != startup_commit:
+        print(f"\nNew version available: {startup_commit[:8]} → {latest[:8]}")
+        print(f"Exiting for update (exit code {UPDATE_EXIT_CODE})...")
+        return True
+    return False
+
 
 # --- Observe ---
 
@@ -977,6 +1042,9 @@ async def run_continuous(reconcile_kwargs: dict, delay: int):
     """Run the reconciliation loop continuously with a delay between runs."""
     run_count = 0
     next_observations: list[dict] = []
+    startup_commit = _get_startup_commit()
+    if startup_commit:
+        print(f"Running commit: {startup_commit[:8]}")
     print(f"Continuous mode: reconciling every {delay}s (Ctrl+C to stop)\n")
     try:
         while True:
@@ -1000,6 +1068,11 @@ async def run_continuous(reconcile_kwargs: dict, delay: int):
                 status = "error"
 
             print(f"\nRun #{run_count} {status}. Next run in {delay}s...\n")
+
+            # Check for updates between runs
+            if await _check_for_update(startup_commit):
+                sys.exit(UPDATE_EXIT_CODE)
+
             await asyncio.sleep(delay)
     except KeyboardInterrupt:
         print(f"\nStopped after {run_count} run(s).")
