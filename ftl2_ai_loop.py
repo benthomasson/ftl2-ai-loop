@@ -835,6 +835,7 @@ async def reconcile(
     state_file: str | None = None,
     dev: bool = False,
     initial_observations: list[dict] | None = None,
+    audit_log: str | None = None,
 ):
     """Run the AI reconciliation loop.
 
@@ -842,6 +843,32 @@ async def reconcile(
         converged (bool): Whether the desired state was achieved
         next_observations (list): Observations the AI wants run at the start of the next run
     """
+    def _write_audit_log(history, converged, iterations):
+        """Write the action history to a JSON audit log file."""
+        if not audit_log:
+            return
+        try:
+            log_path = Path(audit_log)
+            # Load existing log entries if the file exists
+            entries = []
+            if log_path.exists():
+                try:
+                    entries = json.loads(log_path.read_text())
+                except (json.JSONDecodeError, ValueError):
+                    entries = []
+            entries.append({
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "desired_state": desired_state,
+                "converged": converged,
+                "iterations": iterations,
+                "history": history,
+            })
+            log_path.write_text(json.dumps(entries, indent=2, default=str))
+            print(f"Audit log written to {audit_log}")
+        except Exception as e:
+            print(f"Failed to write audit log: {e}")
+            traceback.print_exc()
+
     if observers is None:
         observers = DEFAULT_OBSERVERS
 
@@ -966,6 +993,7 @@ async def reconcile(
                     "actions": [],
                     "results": [],
                 })
+                _write_audit_log(history, converged=True, iterations=i + 1)
                 await post_convergence_review(
                     desired_state, history, i + 1, user_answers, rule_results,
                 )
@@ -1060,6 +1088,7 @@ async def reconcile(
             await asyncio.sleep(2)
 
         print(f"\nDid not converge after {max_iterations} iterations.")
+        _write_audit_log(history, converged=False, iterations=max_iterations)
         await post_convergence_review(
             desired_state, history, max_iterations, user_answers, rule_results,
         )
@@ -1256,6 +1285,7 @@ def cli():
     parser.add_argument("-s", "--secret", action="append", default=[], metavar="MODULE.PARAM=ENV_VAR",
                         help="Bind a secret: community.general.linode_v4.access_token=LINODE_TOKEN")
     parser.add_argument("--state-file", help="FTL2 state file for tracking resources")
+    parser.add_argument("--audit-log", help="JSON file to append action history after each run")
     parser.add_argument("--dev", action="store_true",
                         help="Dev mode: AI reviews rules before they fire and sees results after")
     parser.add_argument("--continuous", action="store_true",
@@ -1288,6 +1318,7 @@ def cli():
         secret_bindings=secret_bindings or None,
         state_file=args.state_file,
         dev=args.dev,
+        audit_log=args.audit_log,
     )
 
     try:
