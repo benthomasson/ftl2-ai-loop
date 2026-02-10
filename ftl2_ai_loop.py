@@ -344,22 +344,63 @@ def _convergence_hint(history: list[dict]) -> str:
     if not actions or not results:
         return ""
     try:
-        # Check if every result has changed=false and no failures
-        all_unchanged = all(
-            isinstance(r, dict)
-            and isinstance(r.get("result"), dict)
-            and r["result"].get("changed") is False
-            and not r["result"].get("failed")
-            for r in results
-        )
-        if all_unchanged:
-            return (f"CONVERGENCE HINT: All {len(actions)} action(s) last iteration returned "
+        # Classify results
+        changed_count = 0
+        unchanged_count = 0
+        failed_count = 0
+        for r in results:
+            if not isinstance(r, dict) or not isinstance(r.get("result"), dict):
+                continue
+            res = r["result"]
+            if res.get("failed"):
+                failed_count += 1
+            elif res.get("changed"):
+                changed_count += 1
+            else:
+                unchanged_count += 1
+
+        if failed_count > 0:
+            return ""
+
+        total = changed_count + unchanged_count
+        if total == 0:
+            return ""
+
+        if changed_count == 0:
+            return (f"CONVERGENCE HINT: All {total} action(s) last iteration returned "
                     f"changed=false — the system is already in the desired state. "
-                    f"You should CONVERGE now unless you have specific reason to doubt "
-                    f"the module results.")
+                    f"You should CONVERGE now.")
+        else:
+            return (f"CONVERGENCE HINT: All {total} action(s) last iteration SUCCEEDED "
+                    f"({changed_count} changed, {unchanged_count} unchanged, 0 failed). "
+                    f"The desired state has been applied. You should CONVERGE now "
+                    f"unless you need to verify something the modules cannot check.")
     except Exception:
         pass
     return ""
+
+
+def _iteration_summary(h: dict) -> str:
+    """Compact one-line summary of an iteration's results."""
+    if h.get("converged"):
+        return "CONVERGED"
+    if h.get("asked"):
+        return f"asked user: {h['asked']}"
+    results = h.get("results", [])
+    if not results:
+        obs = h.get("observations_requested", 0)
+        return f"no actions{f', {obs} observations requested' if obs else ''}"
+    changed = failed = ok = 0
+    for r in results:
+        if isinstance(r, dict) and isinstance(r.get("result"), dict):
+            res = r["result"]
+            if res.get("failed"):
+                failed += 1
+            elif res.get("changed"):
+                changed += 1
+            else:
+                ok += 1
+    return f"{changed} changed, {ok} ok, {failed} failed"
 
 
 def _no_action_warning(history: list[dict]) -> str:
@@ -401,7 +442,9 @@ def build_prompt(current_state: dict, desired_state: str, rules: list[dict],
         for h in recent:
             actions_str = json.dumps(h["actions"], indent=2)
             results_str = json.dumps(h["results"], indent=2, default=str)
-            entries.append(f"Iteration {h['iteration']}:\n  Actions: {actions_str}\n  Results: {results_str}")
+            # Compact summary line
+            summary = _iteration_summary(h)
+            entries.append(f"Iteration {h['iteration']}: {summary}\n  Actions: {actions_str}\n  Results: {results_str}")
         history_summary = f"\nPrevious iterations (don't repeat failed approaches):\n" + "\n".join(entries) + "\n"
 
     answers_summary = ""
