@@ -790,6 +790,133 @@ def build_review_prompt(rule: dict, current_state: dict, desired_state: str) -> 
     """)
 
 
+def build_planning_prompt(desired_state: str, user_answers: list[dict] | None = None) -> str:
+    """Build prompt for the AI to analyze a desired state and split it into increments."""
+    answers_summary = ""
+    if user_answers:
+        entries = []
+        for a in user_answers:
+            entries.append(f"  Q: {a['question']}\n  A: {a['answer']}")
+        answers_summary = f"\nUser answers to your previous questions:\n" + "\n".join(entries) + "\n"
+
+    return textwrap.dedent(f"""\
+        You are a planning assistant for an infrastructure reconciliation system. Analyze the
+        desired state below and break it into ordered increments that can each be independently
+        verified and converged.
+
+        Each increment should be a self-contained desired state description — a single sentence
+        that the reconciliation AI can work toward. Increments execute in order, and each builds
+        on the results of the previous ones.
+
+        Guidelines:
+        - For simple, single-concern tasks: return a single increment (do NOT split unnecessarily)
+        - For complex, multi-step tasks: split into 2-5 ordered increments
+        - Each increment must be independently verifiable (you can check if it succeeded)
+        - Order increments by dependency (create before configure, configure before verify)
+        - Be specific in each increment — include names, versions, paths where known
+
+        You may also specify initial observations for the first increment. These are FTL2 module
+        calls that gather state before the AI starts working. Use the same format as actions:
+        {{"name": "label", "module": "module_name", "params": {{"key": "value"}}}}
+        {{"name": "label", "host": "hostname", "module": "module_name", "params": {{"key": "value"}}}}
+        Only include observations if they would genuinely help iteration 0 start faster.
+
+        If the desired state is genuinely ambiguous and you need clarification before planning,
+        you may ask up to 2 clarifying questions. Only ask when the ambiguity would change the
+        plan structure (e.g., which provider, which OS, which approach). Do NOT ask questions
+        for things you can reasonably assume or decide yourself.
+        {answers_summary}
+        Desired state: {desired_state}
+
+        Respond with ONLY a JSON object (no markdown, no explanation):
+        {{
+          "increments": ["first desired state", "second desired state"],
+          "initial_observations": [
+            {{"name": "label", "module": "module_name", "params": {{"key": "value"}}}}
+          ],
+          "questions": [
+            {{"question": "Which SSL provider?", "options": ["Let's Encrypt", "Self-signed"]}}
+          ]
+        }}
+
+        Notes:
+        - "increments" is required and must have at least 1 element
+        - "initial_observations" is optional (omit or use empty list if not needed)
+        - "questions" is optional — only include if you genuinely need clarification
+        - If you include "questions", leave "increments" as your best guess (they will be
+          re-planned after the user answers)
+    """)
+
+
+async def plan(desired_state: str) -> dict:
+    """Analyze a desired state and split it into increments via the AI.
+
+    Returns a dict with:
+        increments (list[str]): Ordered list of desired state descriptions
+        initial_observations (list[dict]): Observations for the first increment
+        user_answers (list[dict]): Any Q&A collected during planning
+    """
+    user_answers: list[dict] = []
+    max_rounds = 3
+
+    for round_n in range(max_rounds):
+        prompt = build_planning_prompt(desired_state, user_answers or None)
+
+        proc = await asyncio.create_subprocess_exec(
+            "claude", "-p", prompt,
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            start_new_session=True,
+        )
+        try:
+            stdout, stderr = await proc.communicate()
+        except (KeyboardInterrupt, asyncio.CancelledError):
+            proc.terminate()
+            await proc.wait()
+            raise KeyboardInterrupt
+
+        raw = stdout.decode().strip()
+        _log_prompt(f"plan-round{round_n}", prompt, raw)
+
+        if proc.returncode != 0:
+            error = stderr.decode().strip()
+            print(f"  Planning error: {error}")
+            return {"increments": [desired_state], "initial_observations": [], "user_answers": []}
+
+        try:
+            result = json.loads(extract_json(raw))
+        except (json.JSONDecodeError, ValueError):
+            print(f"  Failed to parse planning response, using single increment.")
+            return {"increments": [desired_state], "initial_observations": [], "user_answers": []}
+
+        # Handle clarifying questions
+        questions = result.get("questions", [])
+        if questions and round_n < max_rounds - 1:
+            for q in questions:
+                answer = ask_user(q)
+                user_answers.append({
+                    "question": q["question"],
+                    "answer": answer,
+                })
+            continue
+
+        # Valid plan — return it
+        increments = result.get("increments", [desired_state])
+        if not increments:
+            increments = [desired_state]
+        initial_observations = result.get("initial_observations", [])
+
+        return {
+            "increments": increments,
+            "initial_observations": initial_observations,
+            "user_answers": user_answers,
+        }
+
+    # Exhausted question rounds — use whatever we got
+    return {"increments": [desired_state], "initial_observations": [], "user_answers": user_answers}
+
+
 async def review_rule(rule: dict, current_state: dict, desired_state: str) -> dict:
     """Ask the AI to review a rule before it fires. Returns approve/deny decision."""
     prompt = build_review_prompt(rule, current_state, desired_state)
@@ -975,6 +1102,7 @@ async def reconcile(
     prior_increments: list[dict] | None = None,
     skip_rule_generation: bool = False,
     increments: list[dict] | None = None,
+    user_answers: list[dict] | None = None,
 ):
     """Run the AI reconciliation loop.
 
@@ -1028,7 +1156,7 @@ async def reconcile(
         rules = load_rules(rules_dir)
         history: list[dict] = []
         extra_observers: list[dict] = initial_observations or []
-        user_answers: list[dict] = []
+        user_answers: list[dict] = list(user_answers) if user_answers else []
         rule_results: list[dict] = []
         consecutive_rule_runs = 0
 
@@ -1848,33 +1976,60 @@ async def run_incremental(reconcile_kwargs: dict):
 
     try:
         while True:
-            print(f"\n=== Increment {n} ===")
-            increments.append({"n": n, "desired_state": desired_state})
+            # Planning phase: analyze the desired state and split into increments
+            print(f"\nPlanning...")
+            plan_result = await plan(desired_state)
+            increment_queue = list(plan_result["increments"])
+            planning_observations = plan_result.get("initial_observations", [])
+            planning_answers = plan_result.get("user_answers", [])
 
-            # Build kwargs for this increment, overriding desired_state and
-            # injecting prior_increments and initial_observations
-            kwargs = {
-                **reconcile_kwargs,
-                "desired_state": desired_state,
-                "prior_increments": increments[:-1] if len(increments) > 1 else None,
-                "skip_rule_generation": True,
-                "increments": increments,
-            }
-            if next_observations:
-                kwargs["initial_observations"] = next_observations
+            # Print the plan
+            print(f"  Plan: {len(increment_queue)} increment(s)")
+            for j, inc_state in enumerate(increment_queue, 1):
+                print(f"    {j}. {inc_state}")
+            print()
 
-            result = await reconcile(**kwargs)
+            # Execute each planned increment
+            first_in_plan = True
+            while increment_queue:
+                current_desired = increment_queue.pop(0)
 
-            increments[-1]["converged"] = result["converged"]
-            increments[-1]["iterations"] = len(result.get("history", []))
+                print(f"\n=== Increment {n} ===")
+                increments.append({"n": n, "desired_state": current_desired})
 
-            # Tag history entries with increment number before accumulating
-            for entry in result.get("history", []):
-                entry["increment_n"] = n
-            all_history.extend(result.get("history", []))
+                # Build kwargs for this increment
+                kwargs = {
+                    **reconcile_kwargs,
+                    "desired_state": current_desired,
+                    "prior_increments": increments[:-1] if len(increments) > 1 else None,
+                    "skip_rule_generation": True,
+                    "increments": increments,
+                }
 
-            next_observations = result.get("next_observations")
-            n += 1
+                # Inject planning observations into the first increment only
+                if first_in_plan and planning_observations:
+                    kwargs["initial_observations"] = planning_observations
+                elif next_observations:
+                    kwargs["initial_observations"] = next_observations
+
+                # Seed planning Q&A into the first increment
+                if first_in_plan and planning_answers:
+                    kwargs["user_answers"] = planning_answers
+
+                first_in_plan = False
+
+                result = await reconcile(**kwargs)
+
+                increments[-1]["converged"] = result["converged"]
+                increments[-1]["iterations"] = len(result.get("history", []))
+
+                # Tag history entries with increment number before accumulating
+                for entry in result.get("history", []):
+                    entry["increment_n"] = n
+                all_history.extend(result.get("history", []))
+
+                next_observations = result.get("next_observations")
+                n += 1
 
             # Prompt for next increment
             try:
