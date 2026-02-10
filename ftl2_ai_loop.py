@@ -325,6 +325,29 @@ def save_rule(rule_data: dict, rules_dir: str | Path) -> Path:
 # --- Decide (LLM) ---
 
 
+def _convergence_hint(history: list[dict]) -> str:
+    """Hint the AI to converge if the last iteration's actions all returned changed=false."""
+    if not history:
+        return ""
+    last = history[-1]
+    actions = last.get("actions", [])
+    results = last.get("results", [])
+    if not actions or not results:
+        return ""
+    # Check if every result has changed=false and no failures
+    all_unchanged = all(
+        r.get("result", {}).get("changed") is False
+        and not r.get("result", {}).get("failed")
+        for r in results
+    )
+    if all_unchanged:
+        return (f"CONVERGENCE HINT: All {len(actions)} action(s) last iteration returned "
+                f"changed=false — the system is already in the desired state. "
+                f"You should CONVERGE now unless you have specific reason to doubt "
+                f"the module results.")
+    return ""
+
+
 def _no_action_warning(history: list[dict]) -> str:
     """Warn the AI if the previous iteration(s) had no actions."""
     if not history:
@@ -481,7 +504,7 @@ def build_prompt(current_state: dict, desired_state: str, rules: list[dict],
         {state_json}
         {rules_summary}{history_summary}{answers_summary}{rule_results_summary}
         Iteration budget: {iteration + 1} of {max_iterations} ({"use remaining iterations wisely" if iteration >= max_iterations // 2 else "early iterations, gather information as needed"})
-        {_no_action_warning(history)}
+        {_no_action_warning(history)}{_convergence_hint(history)}
 
         Desired state: {desired_state}
 
