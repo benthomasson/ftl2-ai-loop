@@ -33,6 +33,25 @@ from ftl2 import automation
 REPO_URL = "https://github.com/benthomasson/ftl2-ai-loop"
 UPDATE_EXIT_CODE = 42
 
+# Global prompt log directory — set by CLI --prompt-log flag
+_prompt_log_dir: Path | None = None
+_prompt_log_counter = 0
+
+
+def _log_prompt(label: str, prompt: str, response: str) -> None:
+    """Write a prompt/response pair to the prompt log directory."""
+    global _prompt_log_counter
+    if not _prompt_log_dir:
+        return
+    try:
+        _prompt_log_dir.mkdir(parents=True, exist_ok=True)
+        _prompt_log_counter += 1
+        n = _prompt_log_counter
+        _prompt_log_dir.joinpath(f"{n:03d}-{label}-prompt.txt").write_text(prompt)
+        _prompt_log_dir.joinpath(f"{n:03d}-{label}-response.txt").write_text(response)
+    except Exception as e:
+        print(f"  Failed to write prompt log: {e}")
+
 
 # --- Version Check ---
 
@@ -667,12 +686,14 @@ async def decide(current_state: dict, desired_state: str, rules: list[dict],
     )
     stdout, stderr = await proc.communicate()
 
+    raw = stdout.decode().strip()
+    _log_prompt(f"decide-iter{iteration}", prompt, raw)
+
     if proc.returncode != 0:
         error = stderr.decode().strip()
         print(f"  AI error: {error}")
         return {"converged": False, "reasoning": f"AI call failed: {error}", "actions": []}
 
-    raw = stdout.decode().strip()
     try:
         return json.loads(extract_json(raw))
     except json.JSONDecodeError as e:
@@ -736,12 +757,13 @@ async def review_rule(rule: dict, current_state: dict, desired_state: str) -> di
         stderr=asyncio.subprocess.PIPE,
     )
     stdout, stderr = await proc.communicate()
+    raw = stdout.decode().strip()
+    _log_prompt("rule-review", prompt, raw)
 
     if proc.returncode != 0:
         # If review fails, approve by default so we don't block on AI errors
         return {"approve": True, "reasoning": "AI review unavailable, defaulting to approve"}
 
-    raw = stdout.decode().strip()
     try:
         return json.loads(extract_json(raw))
     except json.JSONDecodeError:
@@ -1141,11 +1163,12 @@ async def post_convergence_review(
         stderr=asyncio.subprocess.PIPE,
     )
     stdout, stderr = await proc.communicate()
+    review = stdout.decode().strip()
+    _log_prompt("self-review", prompt, review)
 
     if proc.returncode != 0:
         return
 
-    review = stdout.decode().strip()
     if review:
         print(f"\n--- AI Self-Review ---")
         print(review)
@@ -1286,6 +1309,7 @@ def cli():
                         help="Bind a secret: community.general.linode_v4.access_token=LINODE_TOKEN")
     parser.add_argument("--state-file", help="FTL2 state file for tracking resources")
     parser.add_argument("--audit-log", help="JSON file to append action history after each run")
+    parser.add_argument("--prompt-log", help="Directory to write prompt/response pairs (one file per call)")
     parser.add_argument("--dev", action="store_true",
                         help="Dev mode: AI reviews rules before they fire and sees results after")
     parser.add_argument("--continuous", action="store_true",
@@ -1307,6 +1331,11 @@ def cli():
         if module_pattern not in secret_bindings:
             secret_bindings[module_pattern] = {}
         secret_bindings[module_pattern][param] = env_var
+
+    global _prompt_log_dir, _prompt_log_counter
+    if args.prompt_log:
+        _prompt_log_dir = Path(args.prompt_log)
+        _prompt_log_counter = 0
 
     reconcile_kwargs = dict(
         desired_state=args.desired_state,
