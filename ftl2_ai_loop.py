@@ -1108,9 +1108,10 @@ async def reconcile(
                 await post_convergence_rule_generation(
                     desired_state, history, rules, rules_dir, current_state,
                 )
-                # Skip review when nothing happened — no actions means nothing to critique
+                # Skip review when nothing happened — no actions or rule firings
                 total_actions = sum(len(h.get("actions", [])) for h in history)
-                if total_actions > 0:
+                rules_fired = any(r for r in rule_results if not r.get("denied"))
+                if total_actions > 0 or rules_fired:
                     await post_convergence_review(
                         desired_state, history, i + 1, user_answers, rule_results,
                         converged=True, review_log=review_log,
