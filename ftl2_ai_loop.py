@@ -448,11 +448,15 @@ def build_prompt(current_state: dict, desired_state: str, rules: list[dict],
         - Set "converged" to true ONLY if the desired state is verified as achieved.
           Do not assume convergence from the existence of unrelated infrastructure.
         - "actions" is the list of module calls to make now. Empty if converged.
-        - "observe" is optional: additional observations to make next iteration
-          (to gather state you need but don't have yet). Use the same format as actions.
+        - "observe" is optional: additional observations to run. Use the same format as actions.
           Include "host" to observe a remote host instead of localhost. Without "host",
           observations run on the local controller. When checking state on a remote server,
           you MUST use "host" — otherwise you're checking localhost.
+          You can include "observe" even when converged — those observations will run at
+          the START of the next run, so the AI has data immediately on iteration 0. Use this
+          to specify the checks needed to verify the desired state (e.g., nginx status,
+          web page content) so the next run can converge in 1 iteration instead of wasting
+          iteration 0 on observation.
         - "rule" is optional: include if you see a pattern worth codifying as a
           permanent rule. Rule code MUST use this exact syntax for module calls:
 
@@ -678,8 +682,14 @@ async def reconcile(
     secret_bindings: dict | None = None,
     state_file: str | None = None,
     dev: bool = False,
+    initial_observations: list[dict] | None = None,
 ):
-    """Run the AI reconciliation loop."""
+    """Run the AI reconciliation loop.
+
+    Returns a dict with:
+        converged (bool): Whether the desired state was achieved
+        next_observations (list): Observations the AI wants run at the start of the next run
+    """
     if observers is None:
         observers = DEFAULT_OBSERVERS
 
@@ -695,7 +705,7 @@ async def reconcile(
     async with automation(**automation_kwargs) as ftl:
         rules = load_rules(rules_dir)
         history: list[dict] = []
-        extra_observers: list[dict] = []
+        extra_observers: list[dict] = initial_observations or []
         user_answers: list[dict] = []
         rule_results: list[dict] = []
         consecutive_rule_runs = 0
@@ -707,6 +717,8 @@ async def reconcile(
             print("DRY RUN — actions will not be executed")
         if dev:
             print("DEV MODE — AI reviews rules before they fire")
+        if initial_observations:
+            print(f"Initial observations from previous run: {len(initial_observations)}")
         print()
 
         for i in range(max_iterations):
@@ -792,6 +804,9 @@ async def reconcile(
 
             if decision.get("converged"):
                 print(f"\nConverged after {i + 1} iteration(s).")
+                next_obs = decision.get("observe", [])
+                if next_obs:
+                    print(f"  ({len(next_obs)} observation(s) queued for next run)")
                 history.append({
                     "iteration": i,
                     "reasoning": reasoning,
@@ -802,7 +817,7 @@ async def reconcile(
                 await post_convergence_review(
                     desired_state, history, i + 1, user_answers, rule_results,
                 )
-                return True
+                return {"converged": True, "next_observations": next_obs}
 
             # Ask the user a question if the AI needs input
             ask_data = decision.get("ask")
@@ -895,7 +910,7 @@ async def reconcile(
         await post_convergence_review(
             desired_state, history, max_iterations, user_answers, rule_results,
         )
-        return False
+        return {"converged": False, "next_observations": []}
 
 
 # --- Post-Convergence Review ---
@@ -961,6 +976,7 @@ async def post_convergence_review(
 async def run_continuous(reconcile_kwargs: dict, delay: int):
     """Run the reconciliation loop continuously with a delay between runs."""
     run_count = 0
+    next_observations: list[dict] = []
     print(f"Continuous mode: reconciling every {delay}s (Ctrl+C to stop)\n")
     try:
         while True:
@@ -971,10 +987,16 @@ async def run_continuous(reconcile_kwargs: dict, delay: int):
             print(f"{'=' * 60}")
 
             try:
-                converged = await reconcile(**reconcile_kwargs)
+                result = await reconcile(
+                    **reconcile_kwargs,
+                    initial_observations=next_observations,
+                )
+                converged = result["converged"]
+                next_observations = result.get("next_observations", [])
                 status = "converged" if converged else "did not converge"
             except Exception as e:
                 print(f"\nRun #{run_count} failed: {e}")
+                next_observations = []
                 status = "error"
 
             print(f"\nRun #{run_count} {status}. Next run in {delay}s...\n")
@@ -1047,8 +1069,8 @@ def cli():
     if args.continuous:
         asyncio.run(run_continuous(reconcile_kwargs, args.delay))
     else:
-        converged = asyncio.run(reconcile(**reconcile_kwargs))
-        sys.exit(0 if converged else 1)
+        result = asyncio.run(reconcile(**reconcile_kwargs))
+        sys.exit(0 if result["converged"] else 1)
 
 
 if __name__ == "__main__":
