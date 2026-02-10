@@ -803,8 +803,25 @@ async def execute(ftl, actions: list[dict], dry_run: bool = False) -> list[dict]
             continue
 
         try:
-            # Start from the host proxy if targeting a remote host
-            target = getattr(ftl, host) if host else ftl
+            # Use bracket notation for host targeting — raises KeyError with
+            # a clear message if the host isn't in inventory, instead of
+            # silently falling through to NamespaceProxy and producing
+            # confusing FQCN errors like "Invalid FQCN: hello-ai3.shell".
+            if host:
+                try:
+                    target = ftl[host]
+                except KeyError:
+                    msg = (
+                        f"Host '{host}' is not in the inventory. "
+                        f"Did you forget to register it with add_host in state_ops? "
+                        f"After creating a server, you must add_host with its IP in the "
+                        f"SAME iteration, then target it in the NEXT iteration."
+                    )
+                    print(f"    FAILED: {msg}")
+                    results.append({"module": module_name, "host": host, "result": {"error": msg}})
+                    continue
+            else:
+                target = ftl
             module_fn = target
             for part in module_name.split("."):
                 module_fn = getattr(module_fn, part)
