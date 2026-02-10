@@ -1291,15 +1291,16 @@ async def reconcile(
                 # Skip review when nothing happened — no actions or rule firings
                 total_actions = sum(len(h.get("actions", [])) for h in history)
                 rules_fired = any(r for r in rule_results if not r.get("denied"))
+                fix_increment = None
                 if total_actions > 0 or rules_fired:
                     print("Reviewing run...")
-                    await post_convergence_review(
+                    fix_increment = await post_convergence_review(
                         desired_state, history, i + 1, user_answers, rule_results,
                         converged=True, review_log=review_log,
                     )
                 else:
                     print("  Skipping review (no actions taken).")
-                return {"converged": True, "next_observations": next_obs, "history": history}
+                return {"converged": True, "next_observations": next_obs, "history": history, "fix_increment": fix_increment}
 
             # Ask the user a question if the AI needs input
             ask_data = decision.get("ask")
@@ -1384,11 +1385,11 @@ async def reconcile(
         print(f"\nDid not converge after {max_iterations} iterations.")
         _write_audit_log(history, converged=False, iterations=max_iterations, increments=increments)
         print("Reviewing run...")
-        await post_convergence_review(
+        fix_increment = await post_convergence_review(
             desired_state, history, max_iterations, user_answers, rule_results,
             converged=False, review_log=review_log,
         )
-        return {"converged": False, "next_observations": [], "history": history}
+        return {"converged": False, "next_observations": [], "history": history, "fix_increment": fix_increment}
 
 
 # --- Post-Convergence Script Generation ---
@@ -1748,8 +1749,12 @@ async def post_convergence_review(
     rule_results: list[dict],
     converged: bool = True,
     review_log: str | None = None,
-):
-    """Ask the AI to review its own performance and suggest feature requests."""
+) -> str | None:
+    """Ask the AI to review its own performance and suggest feature requests.
+
+    Returns a fix increment desired-state string if the review identifies an
+    unresolved failure or false convergence, otherwise None.
+    """
     history_json = json.dumps(history, indent=2, default=str)
     answers_json = json.dumps(user_answers, indent=2) if user_answers else "None"
     rules_json = json.dumps(rule_results, indent=2) if rule_results else "None"
@@ -1776,6 +1781,16 @@ async def post_convergence_review(
            Think about what frustrated you, what information you were missing, what
            capabilities you wished you had. Be specific and practical.
 
+        3. FIX INCREMENT (optional) — If you identified an unresolved failure or
+           false convergence above, provide a fix as a desired state string.
+
+           Format (end of response):
+           <<<FIX_INCREMENT>>>
+           the desired state string for the fix
+           <<<END_FIX_INCREMENT>>>
+
+           Omit entirely if no fix is needed. Only for genuine unresolved problems.
+
         Write your response as plain text for the user to read. Be concise and direct.
     """)
 
@@ -1796,11 +1811,24 @@ async def post_convergence_review(
     _log_prompt("self-review", prompt, review)
 
     if proc.returncode != 0:
-        return
+        return None
 
+    fix_increment = None
     if review:
+        # Parse for fix increment sentinel
+        fix_match = re.search(
+            r"<<<FIX_INCREMENT>>>\s*\n(.*?)\n\s*<<<END_FIX_INCREMENT>>>",
+            review, re.DOTALL,
+        )
+        if fix_match:
+            fix_increment = fix_match.group(1).strip() or None
+            # Strip the sentinel block from displayed review
+            review = review[:fix_match.start()].rstrip()
+
         print(f"\n--- AI Self-Review ---")
         print(review)
+        if fix_increment:
+            print(f"  [Fix increment identified: {fix_increment}]")
         print(f"--- End Review ---\n")
 
         if review_log:
@@ -1808,6 +1836,8 @@ async def post_convergence_review(
                 review_log, review, desired_state, history,
                 iterations, converged, user_answers, rule_results,
             )
+
+    return fix_increment
 
 
 def _write_review_log(
@@ -1998,6 +2028,10 @@ async def run_incremental(reconcile_kwargs: dict, plan_file: str | None = None):
             print(f"Failed to load plan from {plan_file}: {e}")
             print("Falling back to AI planning.")
 
+    max_consecutive_fixes = 2
+    consecutive_fixes = 0
+    fix_increment_states = set()
+
     try:
         while True:
             # Use loaded plan on first iteration, otherwise run planning
@@ -2019,9 +2053,13 @@ async def run_incremental(reconcile_kwargs: dict, plan_file: str | None = None):
             first_in_plan = True
             while increment_queue:
                 current_desired = increment_queue.pop(0)
+                is_fix = current_desired in fix_increment_states
 
                 print(f"\n=== Increment {n} ===")
-                increments.append({"n": n, "desired_state": current_desired})
+                inc_meta = {"n": n, "desired_state": current_desired}
+                if is_fix:
+                    inc_meta["fix"] = True
+                increments.append(inc_meta)
 
                 # Build kwargs for this increment
                 kwargs = {
@@ -2055,6 +2093,20 @@ async def run_incremental(reconcile_kwargs: dict, plan_file: str | None = None):
                 all_history.extend(result.get("history", []))
 
                 next_observations = result.get("next_observations")
+
+                # Check for fix increment from self-review
+                fix_desired = result.get("fix_increment")
+                if fix_desired and consecutive_fixes < max_consecutive_fixes:
+                    print(f"  Injecting fix increment: {fix_desired}")
+                    increment_queue.insert(0, fix_desired)
+                    fix_increment_states.add(fix_desired)
+                    consecutive_fixes += 1
+                elif fix_desired:
+                    print(f"  Fix increment suppressed (max {max_consecutive_fixes} consecutive fixes reached)")
+                    consecutive_fixes = 0
+                else:
+                    consecutive_fixes = 0
+
                 n += 1
 
             # Prompt for next increment
