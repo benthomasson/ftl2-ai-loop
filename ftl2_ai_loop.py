@@ -267,6 +267,13 @@ async def _run_rule_observations(rule: dict, ftl, state: dict) -> dict:
     rule_obs = rule.get("observe", [])
     if not rule_obs:
         return state
+    print(f"  Running {len(rule_obs)} rule observation(s) for {rule['name']}...")
+    for obs in rule_obs:
+        host = obs.get("host")
+        if host:
+            print(f"    → {host}: {obs['module']}({', '.join(f'{k}={v!r}' for k, v in obs.get('params', {}).items())}) as '{obs['name']}'")
+        else:
+            print(f"    → {obs['module']}({', '.join(f'{k}={v!r}' for k, v in obs.get('params', {}).items())}) as '{obs['name']}'")
     obs_state = await observe(ftl, rule_obs)
     merged = {**state, **obs_state}
     return merged
