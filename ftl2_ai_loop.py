@@ -1139,11 +1139,15 @@ def cli():
         dev=args.dev,
     )
 
-    if args.continuous:
-        asyncio.run(run_continuous(reconcile_kwargs, args.delay))
-    else:
-        result = asyncio.run(reconcile(**reconcile_kwargs))
-        sys.exit(0 if result["converged"] else 1)
+    try:
+        if args.continuous:
+            asyncio.run(run_continuous(reconcile_kwargs, args.delay))
+        else:
+            result = asyncio.run(reconcile(**reconcile_kwargs))
+            sys.exit(0 if result["converged"] else 1)
+    except KeyboardInterrupt:
+        print("\nInterrupted.")
+        sys.exit(0)
 
 
 if __name__ == "__main__":
