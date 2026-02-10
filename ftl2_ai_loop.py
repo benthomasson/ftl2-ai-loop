@@ -1844,7 +1844,6 @@ async def run_incremental(reconcile_kwargs: dict):
     try:
         while True:
             print(f"\n=== Increment {n} ===")
-            print(f"Desired state: {desired_state}")
             increments.append({"n": n, "desired_state": desired_state})
 
             # Build kwargs for this increment, overriding desired_state and
