@@ -334,17 +334,22 @@ def _convergence_hint(history: list[dict]) -> str:
     results = last.get("results", [])
     if not actions or not results:
         return ""
-    # Check if every result has changed=false and no failures
-    all_unchanged = all(
-        r.get("result", {}).get("changed") is False
-        and not r.get("result", {}).get("failed")
-        for r in results
-    )
-    if all_unchanged:
-        return (f"CONVERGENCE HINT: All {len(actions)} action(s) last iteration returned "
-                f"changed=false — the system is already in the desired state. "
-                f"You should CONVERGE now unless you have specific reason to doubt "
-                f"the module results.")
+    try:
+        # Check if every result has changed=false and no failures
+        all_unchanged = all(
+            isinstance(r, dict)
+            and isinstance(r.get("result"), dict)
+            and r["result"].get("changed") is False
+            and not r["result"].get("failed")
+            for r in results
+        )
+        if all_unchanged:
+            return (f"CONVERGENCE HINT: All {len(actions)} action(s) last iteration returned "
+                    f"changed=false — the system is already in the desired state. "
+                    f"You should CONVERGE now unless you have specific reason to doubt "
+                    f"the module results.")
+    except Exception:
+        pass
     return ""
 
 
