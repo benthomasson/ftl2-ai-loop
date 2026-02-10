@@ -995,7 +995,7 @@ async def reconcile(
                 })
                 _write_audit_log(history, converged=True, iterations=i + 1)
                 await post_convergence_rule_generation(
-                    desired_state, history, rules, rules_dir,
+                    desired_state, history, rules, rules_dir, current_state,
                 )
                 await post_convergence_review(
                     desired_state, history, i + 1, user_answers, rule_results,
@@ -1098,9 +1098,11 @@ async def post_convergence_rule_generation(
     history: list[dict],
     rules: list[dict],
     rules_dir: str,
+    current_state: dict | None = None,
 ):
     """Ask the AI to write a deterministic rule based on the converged run."""
     history_json = json.dumps(history, indent=2, default=str)
+    state_json = json.dumps(current_state, indent=2, default=str) if current_state else "None"
     existing_rules = [r.get("name", "unknown") for r in rules]
 
     prompt = textwrap.dedent(f"""\
@@ -1110,7 +1112,12 @@ async def post_convergence_rule_generation(
 
         Desired state: {desired_state}
         Action history: {history_json}
+        Final observation state: {state_json}
         Existing rules: {json.dumps(existing_rules)}
+
+        The "Final observation state" shows the keys and values available in the state dict
+        that gets passed to your condition function. Use these exact keys to write a condition
+        that checks whether the rule needs to fire.
 
         A rule replaces the AI for a specific pattern — if the rule's condition matches,
         the rule fires directly without calling the AI. Rules should capture idempotent
