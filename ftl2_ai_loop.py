@@ -504,6 +504,12 @@ def build_prompt(current_state: dict, desired_state: str, rules: list[dict],
           with dnf/apt/service — they work normally on the remote host.
         - The controller machine may be macOS while managed hosts are Linux. Use observations
           to determine the target platform before choosing modules.
+        - The "wait_for" module polls a TCP port until it becomes reachable. Use this instead
+          of "shell: sleep" when waiting for a server to boot. It returns as soon as the port is
+          open, which is faster and more reliable than a fixed sleep.
+          Example: {{"module": "wait_for", "params": {{"host": "192.168.1.10", "port": 22, "timeout": 180}}}}
+          Parameters: host (str), port (int, required), timeout (int, default 300), delay (int, default 0),
+          sleep (int, default 1), state ("started" or "stopped", default "started"), connect_timeout (int, default 5).
         - CRITICAL: The shell/command modules BLOCK until the process exits. To start
           background/daemon processes, you MUST fully detach them so the shell returns:
           {{"module": "shell", "params": {{"cmd": "setsid python3 -m http.server 8000 > /tmp/server.log 2>&1 < /dev/null &"}}}}
