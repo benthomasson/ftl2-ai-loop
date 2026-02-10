@@ -249,10 +249,27 @@ def load_rules(rules_dir: str | Path) -> list[dict]:
                     "name": rule_file.stem,
                     "condition": module.condition,
                     "action": module.action,
+                    "observe": getattr(module, "observe", []),
                     "doc": module.__doc__ or "",
                     "path": str(rule_file),
                 })
     return rules
+
+
+async def _run_rule_observations(rule: dict, ftl, state: dict) -> dict:
+    """Run a rule's declared observations and merge results into state.
+
+    Rules can declare an 'observe' list of observations that must be
+    collected before the condition is evaluated. This makes rules
+    self-contained — they don't depend on the AI having run specific
+    observations in a previous iteration.
+    """
+    rule_obs = rule.get("observe", [])
+    if not rule_obs:
+        return state
+    obs_state = await observe(ftl, rule_obs)
+    merged = {**state, **obs_state}
+    return merged
 
 
 async def check_rules(rules: list[dict], state: dict, ftl, dry_run: bool = False) -> bool:
@@ -264,7 +281,8 @@ async def check_rules(rules: list[dict], state: dict, ftl, dry_run: bool = False
     """
     for rule in rules:
         try:
-            if await rule["condition"](state):
+            eval_state = await _run_rule_observations(rule, ftl, state)
+            if await rule["condition"](eval_state):
                 print(f"  Rule matched: {rule['name']}")
                 if not dry_run:
                     errors_before = len(ftl.errors) if hasattr(ftl, 'errors') else 0
@@ -289,11 +307,15 @@ async def check_rules(rules: list[dict], state: dict, ftl, dry_run: bool = False
     return False
 
 
-async def find_matching_rule(rules: list[dict], state: dict) -> dict | None:
-    """Find the first rule whose condition matches. Does not execute."""
+async def find_matching_rule(rules: list[dict], state: dict, ftl) -> dict | None:
+    """Find the first rule whose condition matches. Does not execute.
+
+    Runs each rule's declared observations before evaluating its condition.
+    """
     for rule in rules:
         try:
-            if await rule["condition"](state):
+            eval_state = await _run_rule_observations(rule, ftl, state)
+            if await rule["condition"](eval_state):
                 return rule
         except Exception as e:
             print(f"  Rule {rule['name']} condition error: {e}")
@@ -345,7 +367,14 @@ def save_rule(rule_data: dict, rules_dir: str | Path) -> Path:
         ''')
 
     header = f'"""{description}\nCreated: {timestamp} by ftl2-ai-loop.\nTrigger: {condition_desc}\n"""\n\n'
-    rule_file.write_text(header + code)
+
+    # Write observation dependencies before the code
+    observe_section = ""
+    observations = rule_data.get("observe", [])
+    if observations:
+        observe_section = f"observe = {json.dumps(observations, indent=4)}\n\n"
+
+    rule_file.write_text(header + observe_section + code)
     print(f"  Rule saved: {rule_file}")
     return rule_file
 
@@ -976,7 +1005,7 @@ async def reconcile(
             print("Checking rules...")
             if dev:
                 # Dev mode: AI reviews rules before they fire and sees results after
-                matched = await find_matching_rule(rules, current_state) if consecutive_rule_runs < 1 else None
+                matched = await find_matching_rule(rules, current_state, ftl) if consecutive_rule_runs < 1 else None
                 if matched:
                     print(f"  Rule matched: {matched['name']}")
                     print("  Reviewing rule...")
@@ -1175,15 +1204,30 @@ async def post_convergence_rule_generation(
           "name": "snake_case_name",
           "condition": "human-readable description of when this fires",
           "description": "what this rule does",
+          "observe": [
+            {{"name": "state_key", "module": "module_name", "params": {{}}, "host": "optional_hostname"}}
+          ],
           "code": "the full Python code"
         }}
+
+        The "observe" field is REQUIRED. It declares the observations the rule needs
+        before its condition can be evaluated. The rule engine will run these observations
+        and inject the results into the state dict before calling your condition function.
+        Without this, your condition will see empty state and fire incorrectly.
+
+        Each observation has:
+        - "name": the key in the state dict (this is what your condition reads)
+        - "module": the FTL2 module to call (e.g., "command", "shell", "service")
+        - "params": module parameters (e.g., {{"cmd": "curl -s http://1.2.3.4/"}})
+        - "host": optional hostname to run on (omit for localhost)
 
         The code must define exactly two async functions:
 
         async def condition(state: dict) -> bool:
             # Return True if this rule should fire.
             # 'state' contains observation results keyed by name.
-            return state.get("nginx_service", {{}}).get("stdout", "") != "active"
+            # These keys come from the "observe" list above.
+            return state.get("nginx_status", {{}}).get("stdout", "").strip() != "active"
 
         async def action(ftl) -> None:
             # Execute the actions. Call modules as await ftl.module_name(**params).
@@ -1195,6 +1239,7 @@ async def post_convergence_rule_generation(
         - For FQCN modules use dot notation: "await ftl.community.general.linode_v4(label=..., state='present')"
         - Do NOT use ftl.call(), ftl.run(), subprocess, os.system, curl, or any other method
         - Do NOT read secrets from os.environ — they are injected automatically
+        - Your condition MUST only reference state keys declared in "observe"
 
         If no pattern is worth codifying (e.g., the run was trivial or the pattern already
         exists in the rules list), respond with:
