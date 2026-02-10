@@ -1979,7 +1979,7 @@ async def run_continuous(reconcile_kwargs: dict, delay: int):
 # --- Incremental Mode ---
 
 
-async def run_incremental(reconcile_kwargs: dict):
+async def run_incremental(reconcile_kwargs: dict, plan_file: str | None = None):
     """Run the reconciliation loop incrementally, prompting for new work after each convergence."""
     increments = []
     all_history = []
@@ -1988,20 +1988,32 @@ async def run_incremental(reconcile_kwargs: dict):
     desired_state = reconcile_kwargs["desired_state"]
     n = 1
 
+    # Load a saved plan if provided
+    loaded_plan = None
+    if plan_file:
+        try:
+            loaded_plan = json.loads(Path(plan_file).read_text())
+            print(f"Loaded plan from {plan_file}")
+        except Exception as e:
+            print(f"Failed to load plan from {plan_file}: {e}")
+            print("Falling back to AI planning.")
+
     try:
         while True:
-            # Planning phase: analyze the desired state and split into increments
-            print(f"\nPlanning...")
-            plan_result = await plan(desired_state)
+            # Use loaded plan on first iteration, otherwise run planning
+            if loaded_plan is not None:
+                plan_result = loaded_plan
+                loaded_plan = None  # Only use it once
+                planning_answers = plan_result.get("user_answers", [])
+            else:
+                print(f"\nPlanning...")
+                plan_result = await plan(desired_state)
+                planning_answers = plan_result.get("user_answers", [])
+
             increment_queue = list(plan_result["increments"])
             planning_observations = plan_result.get("initial_observations", [])
-            planning_answers = plan_result.get("user_answers", [])
 
-            # Print the plan
-            print(f"  Plan: {len(increment_queue)} increment(s)")
-            for j, inc_state in enumerate(increment_queue, 1):
-                print(f"    {j}. {inc_state}")
-            print()
+            _print_plan(plan_result)
 
             # Execute each planned increment
             first_in_plan = True
@@ -2078,13 +2090,10 @@ async def run_incremental(reconcile_kwargs: dict):
 # --- Plan Only Mode ---
 
 
-async def run_plan_only(desired_state: str):
-    """Run the planning phase and print the result without executing."""
-    print("Planning...")
-    result = await plan(desired_state)
-
-    increments = result["increments"]
-    initial_observations = result.get("initial_observations", [])
+def _print_plan(plan_result: dict):
+    """Print a plan result to the console."""
+    increments = plan_result["increments"]
+    initial_observations = plan_result.get("initial_observations", [])
 
     print(f"\n  Plan: {len(increments)} increment(s)")
     for j, inc_state in enumerate(increments, 1):
@@ -2103,6 +2112,17 @@ async def run_plan_only(desired_state: str):
                 print(f"    - {module}({params_str}) as '{obs.get('name', '?')}'")
 
     print()
+
+
+async def run_plan_only(desired_state: str, output_file: str | None = None):
+    """Run the planning phase and print the result without executing."""
+    print("Planning...")
+    result = await plan(desired_state)
+    _print_plan(result)
+
+    if output_file:
+        Path(output_file).write_text(json.dumps(result, indent=2))
+        print(f"Plan saved to {output_file}")
 
 
 # --- CLI ---
@@ -2211,6 +2231,8 @@ def cli():
                             help="Run the planning phase and show increments without executing")
     parser.add_argument("--delay", type=int, default=60,
                         help="Seconds between reconciliation runs in continuous mode (default: 60)")
+    parser.add_argument("-o", "--output", help="Output file for --plan-only to save the plan as JSON")
+    parser.add_argument("--plan", help="Load a saved plan JSON file for --incremental (skips planning)")
     args = parser.parse_args()
 
     # Resolve desired state from file or positional argument
@@ -2260,9 +2282,9 @@ def cli():
         if args.continuous:
             asyncio.run(run_continuous(reconcile_kwargs, args.delay))
         elif args.incremental:
-            asyncio.run(run_incremental(reconcile_kwargs))
+            asyncio.run(run_incremental(reconcile_kwargs, plan_file=args.plan))
         elif args.plan_only:
-            asyncio.run(run_plan_only(args.desired_state))
+            asyncio.run(run_plan_only(args.desired_state, output_file=args.output))
         else:
             result = asyncio.run(reconcile(**reconcile_kwargs))
             sys.exit(0 if result["converged"] else 1)
