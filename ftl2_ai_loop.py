@@ -1147,6 +1147,7 @@ async def reconcile(
                 total_actions = sum(len(h.get("actions", [])) for h in history)
                 rules_fired = any(r for r in rule_results if not r.get("denied"))
                 if total_actions > 0 or rules_fired:
+                    print("Reviewing run...")
                     await post_convergence_review(
                         desired_state, history, i + 1, user_answers, rule_results,
                         converged=True, review_log=review_log,
@@ -1237,6 +1238,7 @@ async def reconcile(
 
         print(f"\nDid not converge after {max_iterations} iterations.")
         _write_audit_log(history, converged=False, iterations=max_iterations)
+        print("Reviewing run...")
         await post_convergence_review(
             desired_state, history, max_iterations, user_answers, rule_results,
             converged=False, review_log=review_log,
