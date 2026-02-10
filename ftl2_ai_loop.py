@@ -1249,10 +1249,19 @@ async def post_convergence_rule_generation(
             await ftl.dnf(name="nginx", state="present")
             await ftl.service(name="nginx", state="started", enabled=True)
 
+        To run modules on a REMOTE HOST, use bracket notation:
+            await ftl["hello-ai3"].dnf(name="nginx", state="present")
+            await ftl["hello-ai3"].service(name="nginx", state="started", enabled=True)
+            await ftl["hello-ai3"].ansible.posix.firewalld(service="http", state="enabled")
+        Without bracket notation, modules run on LOCALHOST (the controller).
+        Do NOT use _host as a parameter — it does not work.
+
         CRITICAL rules for the code:
-        - Call modules as "await ftl.module_name(**params)"
-        - For FQCN modules use dot notation: "await ftl.community.general.linode_v4(label=..., state='present')"
+        - For localhost: "await ftl.module_name(**params)"
+        - For remote hosts: "await ftl[\"hostname\"].module_name(**params)"
+        - For FQCN modules use dot notation: "await ftl[\"hostname\"].community.general.linode_v4(label=..., state='present')"
         - Do NOT use ftl.call(), ftl.run(), subprocess, os.system, curl, or any other method
+        - Do NOT use _host as a module parameter — use ftl["hostname"] bracket notation
         - Do NOT read secrets from os.environ — they are injected automatically
         - Your condition MUST only reference state keys declared in "observe"
 
