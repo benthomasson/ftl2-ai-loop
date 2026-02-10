@@ -821,6 +821,13 @@ def build_planning_prompt(desired_state: str, user_answers: list[dict] | None = 
         {{"name": "label", "host": "hostname", "module": "module_name", "params": {{"key": "value"}}}}
         Only include observations if they would genuinely help iteration 0 start faster.
 
+        IMPORTANT: Use fully qualified collection names (FQCN) for non-builtin modules:
+        - community.general.linode_v4 (not linode_v4)
+        - community.general.homebrew (not homebrew)
+        - community.postgresql.postgresql_db (not postgresql_db)
+        - ansible.posix.firewalld (not firewalld)
+        Builtin modules (command, shell, file, copy, stat, service, dnf, apt) do not need FQCN.
+
         If the desired state is genuinely ambiguous and you need clarification before planning,
         you may ask up to 2 clarifying questions. Only ask when the ambiguity would change the
         plan structure (e.g., which provider, which OS, which approach). Do NOT ask questions
