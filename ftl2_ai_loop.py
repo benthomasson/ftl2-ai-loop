@@ -1100,10 +1100,15 @@ async def reconcile(
                 await post_convergence_rule_generation(
                     desired_state, history, rules, rules_dir, current_state,
                 )
-                await post_convergence_review(
-                    desired_state, history, i + 1, user_answers, rule_results,
-                    converged=True, review_log=review_log,
-                )
+                # Skip review when nothing happened — no actions means nothing to critique
+                total_actions = sum(len(h.get("actions", [])) for h in history)
+                if total_actions > 0:
+                    await post_convergence_review(
+                        desired_state, history, i + 1, user_answers, rule_results,
+                        converged=True, review_log=review_log,
+                    )
+                else:
+                    print("  Skipping review (no actions taken).")
                 return {"converged": True, "next_observations": next_obs}
 
             # Ask the user a question if the AI needs input
