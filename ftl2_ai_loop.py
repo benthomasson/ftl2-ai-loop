@@ -139,6 +139,9 @@ def _persist_host_facts(ftl, hostname: str, module: str, params: dict, result: d
     (os_family, distribution, pkg_manager) so future runs don't need to
     re-discover them.
     """
+    if not isinstance(result, dict):
+        return
+
     facts = {}
 
     # setup module returns ansible_facts with system, machine, etc.
