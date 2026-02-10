@@ -143,6 +143,10 @@ async def observe(ftl, observers: list[dict]) -> dict:
             # Unwrap single-element lists so rules see a dict, not [dict].
             if isinstance(result, list) and len(result) == 1:
                 result = result[0]
+            # ExecuteResult objects need to be converted to their output dict
+            # so rules can use .get() on them.
+            if hasattr(result, 'output') and not isinstance(result, dict):
+                result = result.output
             state[obs["name"]] = result
 
             # Persist OS facts to state file when we learn them
