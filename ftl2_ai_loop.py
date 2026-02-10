@@ -829,6 +829,33 @@ async def execute(ftl, actions: list[dict], dry_run: bool = False) -> list[dict]
             changed = result.get("changed", False) if isinstance(result, dict) else False
             print(f"    ok (changed={changed})")
             results.append({"module": module_name, "host": host, "result": result})
+
+            # Auto-register hosts from cloud provisioning results.
+            # When a module returns an instance with a label and IP (e.g.,
+            # linode_v4), automatically add it to the live inventory so
+            # subsequent actions in this iteration can target it.
+            if isinstance(result, dict) and not host:
+                instance = result.get("instance", {})
+                if isinstance(instance, dict):
+                    label = instance.get("label")
+                    ipv4_list = instance.get("ipv4", [])
+                    if label and ipv4_list:
+                        ip = ipv4_list[0]
+                        try:
+                            ftl.add_host(
+                                hostname=label,
+                                ansible_host=ip,
+                                ansible_user="root",
+                            )
+                            if hasattr(ftl, 'state') and ftl.state:
+                                ftl.state.add_resource(label, {
+                                    "provider": module_name.split(".")[-1],
+                                    "label": label,
+                                    "ipv4": ipv4_list,
+                                })
+                            print(f"    Auto-registered host: {label} ({ip})")
+                        except Exception as e:
+                            print(f"    Warning: failed to auto-register host {label}: {e}")
         except Exception as e:
             print(f"    FAILED: {e}")
             traceback.print_exc()
