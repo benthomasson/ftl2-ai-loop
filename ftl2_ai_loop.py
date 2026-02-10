@@ -602,12 +602,6 @@ def build_prompt(current_state: dict, desired_state: str, rules: list[dict],
             {{"name": "label", "module": "module_name", "params": {{"key": "value"}}}},
             {{"name": "label", "host": "hostname", "module": "module_name", "params": {{"key": "value"}}}}
           ],
-          "rule": {{
-            "name": "snake_case_name",
-            "condition": "when this is true",
-            "description": "what this rule does",
-            "code": "async def condition(state):\\n    ...\\nasync def action(ftl):\\n    ..."
-          }},
           "ask": {{
             "question": "Which web server should I install?",
             "options": ["nginx", "apache", "caddy"]
@@ -627,21 +621,6 @@ def build_prompt(current_state: dict, desired_state: str, rules: list[dict],
           to specify the checks needed to verify the desired state (e.g., nginx status,
           web page content) so the next run can converge in 1 iteration instead of wasting
           iteration 0 on observation.
-        - "rule" is optional: include if you see a pattern worth codifying as a
-          permanent rule. Rule code MUST use this exact syntax for module calls:
-
-          async def condition(state: dict) -> bool:
-              return state.get("nginx_service", {{}}).get("stdout", "") != "active"
-
-          async def action(ftl) -> None:
-              await ftl.dnf(name="nginx", state="present")
-              await ftl.service(name="nginx", state="started", enabled=True)
-              await ftl.copy(content="<h1>Hello World</h1>", dest="/var/www/html/index.html")
-
-          CRITICAL: In rule code, call modules as "await ftl.module_name(**params)".
-          For FQCN modules use dot notation: "await ftl.community.general.linode_v4(label=..., state='present')".
-          Do NOT use ftl.call(), ftl.run(), subprocess, os.system, curl, or any other method.
-          Do NOT read secrets from os.environ — they are injected automatically.
         - "ask" is optional: use it when you need information from the user before
           proceeding. The loop will pause, show your question, and feed the answer back
           to you on the next iteration. Use this when:
@@ -653,7 +632,6 @@ def build_prompt(current_state: dict, desired_state: str, rules: list[dict],
           "options" is optional — omit it for free-form questions. When present, the user
           can pick a numbered option or type a custom answer.
           When you use "ask", set "actions" to [] — don't act and ask in the same response.
-        - Don't duplicate existing rules.
         - Don't repeat actions that failed in previous iterations.
     """)
 
@@ -1016,6 +994,9 @@ async def reconcile(
                     "results": [],
                 })
                 _write_audit_log(history, converged=True, iterations=i + 1)
+                await post_convergence_rule_generation(
+                    desired_state, history, rules, rules_dir,
+                )
                 await post_convergence_review(
                     desired_state, history, i + 1, user_answers, rule_results,
                 )
@@ -1098,14 +1079,6 @@ async def reconcile(
                     else:
                         print(f"  DRY RUN: would {op_type} {name}")
 
-            # Learn
-            rule_data = decision.get("rule")
-            if rule_data and rule_data.get("name") and rule_data.get("code"):
-                print("Learning...")
-                save_rule(rule_data, rules_dir)
-                # Reload rules
-                rules = load_rules(rules_dir)
-
             print()
             await asyncio.sleep(2)
 
@@ -1115,6 +1088,89 @@ async def reconcile(
             desired_state, history, max_iterations, user_answers, rule_results,
         )
         return {"converged": False, "next_observations": []}
+
+
+# --- Post-Convergence Rule Generation ---
+
+
+async def post_convergence_rule_generation(
+    desired_state: str,
+    history: list[dict],
+    rules: list[dict],
+    rules_dir: str,
+):
+    """Ask the AI to write a deterministic rule based on the converged run."""
+    history_json = json.dumps(history, indent=2, default=str)
+    existing_rules = [r.get("name", "unknown") for r in rules]
+
+    prompt = textwrap.dedent(f"""\
+        You just completed an infrastructure reconciliation run that converged successfully.
+        Review the actions taken and decide if any recurring pattern should be codified as
+        a deterministic rule.
+
+        Desired state: {desired_state}
+        Action history: {history_json}
+        Existing rules: {json.dumps(existing_rules)}
+
+        A rule replaces the AI for a specific pattern — if the rule's condition matches,
+        the rule fires directly without calling the AI. Rules should capture idempotent
+        patterns that will recur on every run (e.g., "ensure nginx is installed and running").
+
+        If you identify a pattern worth codifying, respond with a JSON object:
+        {{
+          "name": "snake_case_name",
+          "condition": "human-readable description of when this fires",
+          "description": "what this rule does",
+          "code": "the full Python code"
+        }}
+
+        The code must define exactly two async functions:
+
+        async def condition(state: dict) -> bool:
+            # Return True if this rule should fire.
+            # 'state' contains observation results keyed by name.
+            return state.get("nginx_service", {{}}).get("stdout", "") != "active"
+
+        async def action(ftl) -> None:
+            # Execute the actions. Call modules as await ftl.module_name(**params).
+            await ftl.dnf(name="nginx", state="present")
+            await ftl.service(name="nginx", state="started", enabled=True)
+
+        CRITICAL rules for the code:
+        - Call modules as "await ftl.module_name(**params)"
+        - For FQCN modules use dot notation: "await ftl.community.general.linode_v4(label=..., state='present')"
+        - Do NOT use ftl.call(), ftl.run(), subprocess, os.system, curl, or any other method
+        - Do NOT read secrets from os.environ — they are injected automatically
+
+        If no pattern is worth codifying (e.g., the run was trivial or the pattern already
+        exists in the rules list), respond with:
+        {{"skip": true, "reasoning": "brief explanation"}}
+    """)
+
+    proc = await asyncio.create_subprocess_exec(
+        "claude", "-p", prompt,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    stdout, stderr = await proc.communicate()
+    raw = stdout.decode().strip()
+    _log_prompt("rule-generation", prompt, raw)
+
+    if proc.returncode != 0:
+        return
+
+    try:
+        result = json.loads(extract_json(raw))
+    except (json.JSONDecodeError, ValueError):
+        return
+
+    if result.get("skip"):
+        print(f"  Rule generation skipped: {result.get('reasoning', 'no reason given')}")
+        return
+
+    if result.get("name") and result.get("code"):
+        print("Learning...")
+        save_rule(result, rules_dir)
 
 
 # --- Post-Convergence Review ---
