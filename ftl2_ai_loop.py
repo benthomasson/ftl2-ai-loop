@@ -703,10 +703,17 @@ async def decide(current_state: dict, desired_state: str, rules: list[dict],
 
     proc = await asyncio.create_subprocess_exec(
         "claude", "-p", prompt,
+        stdin=asyncio.subprocess.DEVNULL,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        start_new_session=True,
     )
-    stdout, stderr = await proc.communicate()
+    try:
+        stdout, stderr = await proc.communicate()
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        proc.terminate()
+        await proc.wait()
+        raise KeyboardInterrupt
 
     raw = stdout.decode().strip()
     _log_prompt(f"decide-iter{iteration}", prompt, raw)
@@ -775,10 +782,17 @@ async def review_rule(rule: dict, current_state: dict, desired_state: str) -> di
 
     proc = await asyncio.create_subprocess_exec(
         "claude", "-p", prompt,
+        stdin=asyncio.subprocess.DEVNULL,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        start_new_session=True,
     )
-    stdout, stderr = await proc.communicate()
+    try:
+        stdout, stderr = await proc.communicate()
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        proc.terminate()
+        await proc.wait()
+        raise KeyboardInterrupt
     raw = stdout.decode().strip()
     _log_prompt("rule-review", prompt, raw)
 
@@ -1272,10 +1286,17 @@ async def post_convergence_rule_generation(
 
     proc = await asyncio.create_subprocess_exec(
         "claude", "-p", prompt,
+        stdin=asyncio.subprocess.DEVNULL,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        start_new_session=True,
     )
-    stdout, stderr = await proc.communicate()
+    try:
+        stdout, stderr = await proc.communicate()
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        proc.terminate()
+        await proc.wait()
+        raise KeyboardInterrupt
     raw = stdout.decode().strip()
     _log_prompt("rule-generation", prompt, raw)
 
@@ -1340,10 +1361,17 @@ async def post_convergence_review(
 
     proc = await asyncio.create_subprocess_exec(
         "claude", "-p", prompt,
+        stdin=asyncio.subprocess.DEVNULL,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        start_new_session=True,
     )
-    stdout, stderr = await proc.communicate()
+    try:
+        stdout, stderr = await proc.communicate()
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        proc.terminate()
+        await proc.wait()
+        raise KeyboardInterrupt
     review = stdout.decode().strip()
     _log_prompt("self-review", prompt, review)
 
