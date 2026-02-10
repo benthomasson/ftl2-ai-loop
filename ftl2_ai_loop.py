@@ -1091,7 +1091,9 @@ async def run_continuous(reconcile_kwargs: dict, delay: int):
                 next_observations = result.get("next_observations", [])
                 status = "converged" if converged else "did not converge"
             except Exception as e:
+                import traceback
                 print(f"\nRun #{run_count} failed: {e}")
+                traceback.print_exc()
                 next_observations = []
                 status = "error"
 
