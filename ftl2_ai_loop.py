@@ -615,6 +615,10 @@ def build_prompt(current_state: dict, desired_state: str, rules: list[dict],
         1. Action: create server via community.general.linode_v4 → get IP from result
         2. State op: add_host with the IP and ansible_user
         3. Next iteration: use {{"host": "hello-ai", "module": "dnf", ...}} to run on it
+        NOTE: When a cloud provisioning module (e.g., linode_v4) returns an instance with
+        a label and IP, the framework AUTOMATICALLY registers the host and waits for SSH
+        (port 22, up to 180s). You do NOT need to issue a separate wait_for for SSH after
+        provisioning — it has already been done. Proceed directly to configuring the host.
         ALWAYS specify "ansible_user" in add_host (usually "root" for cloud servers).
         Without it, FTL2 defaults to the local username which will fail on remote hosts.
         You can re-register a host to fix parameters — add_host overwrites existing entries.
@@ -1780,6 +1784,18 @@ async def post_convergence_review(
         2. FEATURE REQUESTS — What changes to ftl2-ai-loop would make your job easier?
            Think about what frustrated you, what information you were missing, what
            capabilities you wished you had. Be specific and practical.
+
+           NOTE: The following features ALREADY EXIST — do not request them:
+           - Dry-run mode (--dry-run flag)
+           - Observations and actions in the same response (use "observe" and "actions" together)
+           - OS/platform facts cached in the state file (_state_file → hosts → facts)
+           - State file for tracking resources and hosts across runs (--state flag)
+           - wait_for module for polling TCP ports (instead of shell: sleep)
+           - Auto-SSH-wait after cloud provisioning (framework waits for port 22 automatically)
+           - Host targeting via "host" field in actions (no need for ssh user@host)
+           - Secret injection via secret_bindings (no env vars or hardcoded tokens)
+           - Asking the user questions via "ask" in the response JSON
+           Only request features that are NOT in this list.
 
         3. FIX INCREMENT (optional) — If you identified an unresolved failure or
            false convergence above, provide a fix as a desired state string.
