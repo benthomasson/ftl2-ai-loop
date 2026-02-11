@@ -1794,7 +1794,7 @@ async def post_convergence_rule_generation(
         save_rule(result, rules_dir)
 
 
-async def review_rules(rules_dir: str = "rules") -> str | None:
+async def review_rules(rules_dir: str = "rules", review_log: str | None = None) -> str | None:
     """Review all rules for conflicts, redundancies, and issues."""
     rules = load_rules(rules_dir)
     if not rules:
@@ -1869,6 +1869,34 @@ async def review_rules(rules_dir: str = "rules") -> str | None:
         return None
 
     print(raw)
+
+    # Write to review log directory
+    log_dir = review_log or (str(Path(rules_dir).parent / "reviews") if rules_dir != "rules" else None)
+    if log_dir:
+        try:
+            dir_path = Path(log_dir)
+            dir_path.mkdir(parents=True, exist_ok=True)
+            existing = sorted(dir_path.glob("rule-review-*.md"))
+            if existing:
+                try:
+                    n = int(existing[-1].stem.split("-")[-1]) + 1
+                except (IndexError, ValueError):
+                    n = len(existing) + 1
+            else:
+                n = 1
+            ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+            rule_names = [r["name"] for r in rules]
+            filepath = dir_path / f"rule-review-{n:03d}.md"
+            filepath.write_text(
+                f"# Rule Review {n:03d}\n\n"
+                f"**Date:** {ts}\n"
+                f"**Rules reviewed:** {', '.join(rule_names)}\n\n"
+                f"{raw}\n"
+            )
+            print(f"  Review written to {filepath}")
+        except Exception:
+            pass
+
     return raw
 
 
@@ -2289,7 +2317,8 @@ async def run_incremental(reconcile_kwargs: dict, plan_file: str | None = None):
     rules = load_rules(reconcile_kwargs.get("rules_dir", "rules"))
     if rules:
         print("\nReviewing rules for conflicts...")
-        await review_rules(reconcile_kwargs.get("rules_dir", "rules"))
+        await review_rules(reconcile_kwargs.get("rules_dir", "rules"),
+                           review_log=reconcile_kwargs.get("review_log"))
 
 
 # --- Plan Only Mode ---
@@ -2487,7 +2516,7 @@ def cli():
 
     try:
         if args.review_rules:
-            asyncio.run(review_rules(args.rules_dir))
+            asyncio.run(review_rules(args.rules_dir, review_log=args.review_log))
         elif args.continuous:
             asyncio.run(run_continuous(reconcile_kwargs, args.delay))
         elif args.incremental:
