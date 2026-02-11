@@ -87,6 +87,25 @@ ftl2-ai-loop "nginx installed and running" --continuous
 
 # Continuous with custom delay (5 minutes)
 ftl2-ai-loop "nginx installed and running" --continuous --delay 300
+
+# Incremental — plan and execute step by step
+ftl2-ai-loop -f infrastructure.md --incremental --state-file state.json
+
+# Plan only — show what would be done, save to file
+ftl2-ai-loop -f infrastructure.md --plan-only -o plan.json
+
+# Execute a saved plan
+ftl2-ai-loop -f infrastructure.md --incremental --plan plan.json
+
+# With policy enforcement
+ftl2-ai-loop "configure the server" --policy policy.yml --environment prod
+
+# Full observability — audit, prompt, review, and script logs
+ftl2-ai-loop -f desired_state.md --incremental \
+    --audit-log audit.json \
+    --prompt-log prompts/ \
+    --review-log reviews/ \
+    --script-log scripts/
 ```
 
 ### CLI Options
@@ -103,7 +122,19 @@ ftl2-ai-loop "nginx installed and running" --continuous --delay 300
 | `--state-file` | JSON state file for tracking resources across runs |
 | `--dev` | Dev mode: AI reviews rules before they fire and sees results after |
 | `--continuous` | Run continuously, re-reconciling after each delay period |
+| `--incremental` | Plan work in increments, prompt for more after each convergence |
+| `--plan-only` | Show planned increments without executing |
+| `--plan` | Load a saved plan JSON file for `--incremental` (skips planning) |
+| `-o, --output` | Output file for `--plan-only` to save the plan as JSON |
+| `--policy` | YAML policy file to enforce before each module execution |
+| `--environment` | Environment label for policy matching (e.g., `prod`, `staging`) |
+| `--review-rules` | Review all rules for conflicts and issues |
 | `--delay` | Seconds between runs in continuous mode (default: 60) |
+| `--audit-log` | JSON file to append action history after each run |
+| `--prompt-log` | Directory to write prompt/response pairs |
+| `--review-log` | Directory to write self-review markdown files |
+| `--script-log` | Directory to write generated FTL2 scripts |
+| `-f, --file` | Read desired state from a file instead of the command line |
 
 ## Rules
 
@@ -178,6 +209,79 @@ Run #2 converged. Next run in 60s...
 ```
 
 This turns ftl2-ai-loop into a persistent controller. Combine with `--state-file` to track resources across runs and `--dev` to review rules as they develop.
+
+## Incremental Mode
+
+With `--incremental`, the AI plans the work as a series of increments, executes each one, then prompts for additional work. This is ideal for large infrastructure builds where you want to guide the process step by step.
+
+```bash
+# Build a minecraft server incrementally
+ftl2-ai-loop -f MINECRAFT_INSTALLATION_GUIDE.md \
+    --incremental \
+    --state-file .ftl2-state.json \
+    --script-log scripts/ \
+    --review-log reviews/ \
+    -s community.general.linode_v4.access_token=LINODE_TOKEN
+```
+
+The AI first creates a plan with numbered increments, then executes each one as a separate reconciliation run. After each increment converges, the AI generates a standalone FTL2 script and writes rules for patterns it wants to handle automatically.
+
+### Plan-Only Mode
+
+With `--plan-only`, the AI creates the plan but doesn't execute anything. Save the plan to JSON with `-o` and load it later with `--plan`:
+
+```bash
+# Plan without executing
+ftl2-ai-loop -f desired_state.md --plan-only -o plan.json
+
+# Execute a saved plan
+ftl2-ai-loop -f desired_state.md --incremental --plan plan.json
+```
+
+## Policy Engine
+
+The `--policy` flag enforces rules about what the AI loop is allowed to do. Every module execution — whether from a deterministic rule or an AI decision — is checked against the policy before running.
+
+```bash
+ftl2-ai-loop "configure the server" \
+    --policy policy.yml \
+    --environment prod
+```
+
+Policy file format (YAML):
+
+```yaml
+rules:
+  - decision: deny
+    match:
+      module: "shell"
+      environment: "prod"
+    reason: "Use proper modules in production"
+
+  - decision: deny
+    match:
+      module: "*"
+      param.state: "absent"
+      environment: "prod"
+    reason: "No destructive actions in production"
+
+  - decision: deny
+    match:
+      module: "community.general.linode_v4"
+      param.state: "absent"
+    reason: "Cannot destroy servers via AI loop"
+```
+
+Match conditions support fnmatch patterns:
+
+| Condition | Matches against |
+|-----------|----------------|
+| `module` | Module name (e.g., `shell`, `amazon.aws.*`) |
+| `host` | Target host (e.g., `prod-*`) |
+| `environment` | Environment label from `--environment` |
+| `param.<name>` | Specific parameter value (e.g., `param.state: absent`) |
+
+Rules are evaluated top-to-bottom. The first matching deny rule blocks the action with `PolicyDeniedError`. If no deny rule matches, the action proceeds.
 
 ## Ask User
 
