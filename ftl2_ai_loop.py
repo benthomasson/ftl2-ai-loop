@@ -246,8 +246,20 @@ def load_rules(rules_dir: str | Path) -> list[dict]:
     if not rules_path.exists():
         return []
 
+    # Load config to find disabled rules
+    config_file = rules_path / "rules.json"
+    disabled = set()
+    if config_file.exists():
+        try:
+            config = json.loads(config_file.read_text())
+            disabled = set(config.get("disabled", []))
+        except (json.JSONDecodeError, ValueError):
+            pass
+
     rules = []
     for rule_file in sorted(rules_path.glob("*.py")):
+        if rule_file.stem in disabled:
+            continue
         spec = importlib.util.spec_from_file_location(rule_file.stem, rule_file)
         if spec and spec.loader:
             module = importlib.util.module_from_spec(spec)
@@ -1133,6 +1145,7 @@ async def reconcile(
     script_log: str | None = None,
     prior_increments: list[dict] | None = None,
     skip_rule_generation: bool = False,
+    skip_rule_firing: bool = False,
     increments: list[dict] | None = None,
     user_answers: list[dict] | None = None,
 ):
@@ -1231,8 +1244,9 @@ async def reconcile(
             # Check rules first, but don't let rules loop forever.
             # If a rule handled the last iteration too, skip rules and
             # let the AI check for convergence.
-            print("Checking rules...")
-            if dev:
+            if skip_rule_firing:
+                pass  # Rules loaded for context but don't fire
+            elif dev:
                 # Dev mode: AI reviews rules before they fire and sees results after
                 matched = await find_matching_rule(rules, current_state, ftl) if consecutive_rule_runs < 1 else None
                 if matched:
@@ -1756,6 +1770,84 @@ async def post_convergence_rule_generation(
         save_rule(result, rules_dir)
 
 
+async def review_rules(rules_dir: str = "rules") -> str | None:
+    """Review all rules for conflicts, redundancies, and issues."""
+    rules = load_rules(rules_dir)
+    if not rules:
+        print("No rules to review.")
+        return None
+
+    # Read the full source code of each rule file
+    rule_sources = []
+    for rule in rules:
+        try:
+            source = Path(rule["path"]).read_text()
+        except Exception:
+            source = "(could not read source)"
+        rule_sources.append({
+            "name": rule["name"],
+            "doc": rule["doc"],
+            "source": source,
+        })
+
+    rules_text = ""
+    for rs in rule_sources:
+        rules_text += f"\n--- Rule: {rs['name']} ---\n"
+        if rs["doc"]:
+            rules_text += f"Docstring: {rs['doc']}\n"
+        rules_text += f"Source:\n{rs['source']}\n"
+
+    prompt = textwrap.dedent(f"""\
+        Review the following {len(rules)} infrastructure rules for issues.
+        These rules are used in an AI reconciliation loop — when a rule's condition
+        matches the current system state, its action fires automatically without AI involvement.
+
+        {rules_text}
+
+        Analyze all rules together and report:
+
+        1. CONFLICTS — Rules with conditions that could match the same situation but take
+           different or contradictory actions. For each conflict, name both rules and explain
+           the scenario.
+
+        2. REDUNDANCIES — Rules that do the same thing or have overlapping logic that could
+           be merged. Name the rules and suggest how to consolidate.
+
+        3. INTERFERENCE — Rules where one rule's action could trigger another rule's condition
+           in an unintended loop or cascade. Describe the chain.
+
+        4. BROKEN DEPENDENCIES — Rules whose condition references observation keys that don't
+           appear in their observe list, or observe entries that look misconfigured.
+
+        5. RECOMMENDATIONS — Which rules should be disabled or merged, with brief reasoning.
+
+        Be specific. Reference rules by name. If everything looks clean, say so.
+    """)
+
+    proc = await asyncio.create_subprocess_exec(
+        "claude", "-p", prompt,
+        stdin=asyncio.subprocess.DEVNULL,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        start_new_session=True,
+    )
+    try:
+        stdout, stderr = await proc.communicate()
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        proc.terminate()
+        await proc.wait()
+        raise KeyboardInterrupt
+    raw = stdout.decode().strip()
+    _log_prompt("rule-review", prompt, raw)
+
+    if proc.returncode != 0:
+        print("Rule review failed.")
+        return None
+
+    print(raw)
+    return raw
+
+
 # --- Post-Convergence Review ---
 
 
@@ -2096,7 +2188,8 @@ async def run_incremental(reconcile_kwargs: dict, plan_file: str | None = None):
                     **reconcile_kwargs,
                     "desired_state": current_desired,
                     "prior_increments": increments[:-1] if len(increments) > 1 else None,
-                    "skip_rule_generation": True,
+                    "skip_rule_generation": False,
+                    "skip_rule_firing": True,
                     "increments": increments,
                 }
 
@@ -2167,6 +2260,12 @@ async def run_incremental(reconcile_kwargs: dict, plan_file: str | None = None):
                 script_log=reconcile_kwargs["script_log"],
                 increments=increments,
             )
+
+    # Review all rules for conflicts
+    rules = load_rules(reconcile_kwargs.get("rules_dir", "rules"))
+    if rules:
+        print("\nReviewing rules for conflicts...")
+        await review_rules(reconcile_kwargs.get("rules_dir", "rules"))
 
 
 # --- Plan Only Mode ---
@@ -2311,6 +2410,8 @@ def cli():
                             help="Prompt for additional work after each convergence")
     mode_group.add_argument("--plan-only", action="store_true",
                             help="Run the planning phase and show increments without executing")
+    mode_group.add_argument("--review-rules", action="store_true",
+                            help="Review all rules for conflicts and issues")
     parser.add_argument("--delay", type=int, default=60,
                         help="Seconds between reconciliation runs in continuous mode (default: 60)")
     parser.add_argument("-o", "--output", help="Output file for --plan-only to save the plan as JSON")
@@ -2323,7 +2424,7 @@ def cli():
             args.desired_state = Path(args.file).read_text().strip()
         except Exception as e:
             parser.error(f"Cannot read file {args.file!r}: {e}")
-    if not args.desired_state:
+    if not args.desired_state and not args.review_rules:
         parser.error("desired_state is required (positional argument or -f/--file)")
 
     # Parse secret bindings: "module.param=ENV_VAR" → {"module": {"param": "ENV_VAR"}}
@@ -2361,7 +2462,9 @@ def cli():
     )
 
     try:
-        if args.continuous:
+        if args.review_rules:
+            asyncio.run(review_rules(args.rules_dir))
+        elif args.continuous:
             asyncio.run(run_continuous(reconcile_kwargs, args.delay))
         elif args.incremental:
             asyncio.run(run_incremental(reconcile_kwargs, plan_file=args.plan))
