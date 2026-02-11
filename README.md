@@ -371,7 +371,7 @@ The `add_host` state op registers the host in FTL2's live inventory (and persist
 - **SSH setup**: Host targeting requires SSH key authentication to be configured on the remote host. Pre-built images with SSH keys are the easiest path.
 - **Rule quality**: AI-generated rules can reference nonexistent observer keys (creating always-true conditions), use wrong module syntax, or target the wrong host. Use `--dev` mode for AI-assisted rule review. Automatic rule lifecycle management (rewrite, delete, disable) is not yet implemented.
 - **Background processes**: FTL2's shell module blocks until all child processes exit. Background daemons must be started with `setsid ... < /dev/null &` — `nohup &` alone is insufficient.
-- **`copy` module**: Does not support the `content` parameter. Use `shell` with `echo` or heredoc instead.
+
 
 ## Requirements
 
