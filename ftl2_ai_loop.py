@@ -573,14 +573,6 @@ def build_prompt(current_state: dict, desired_state: str, rules: list[dict],
           "community.general.homebrew" on macOS. Check the OS from observations first.
         - Services: use "service" on Linux (systemd). On macOS there is no service module —
           use "command" or "shell" with launchctl if needed.
-        - The "copy" module supports a "content" parameter for writing text to files. Prefer
-          copy over shell for file content — it is idempotent (won't report changed if content matches).
-          Example: {{"module": "copy", "params": {{"content": "<h1>Hello</h1>", "dest": "/var/www/html/index.html"}}}}
-        - The "copy" module with "src" reads from the CONTROLLER filesystem (where the AI loop
-          is running) and transfers to the remote host via SFTP. Use "src" to deploy local config
-          files: {{"host": "web01", "module": "copy", "params": {{"src": "nginx.conf", "dest": "/etc/nginx/nginx.conf", "mode": "0644"}}}}
-          Relative paths resolve from the working directory. Use "content" for inline text,
-          "src" for deploying files that exist in the project directory.
         - For remote hosts (Linux servers), use host targeting (the "host" field in actions)
           with dnf/apt/service — they work normally on the remote host.
         - The controller machine may be macOS while managed hosts are Linux. Use observations
@@ -602,6 +594,23 @@ def build_prompt(current_state: dict, desired_state: str, rules: list[dict],
         - community.general.homebrew (not homebrew)
         - community.postgresql.postgresql_db (not postgresql_db)
         - ansible.posix.firewalld (not firewalld)
+
+        FTL2 native modules — these run on the CONTROLLER, not the remote host. They
+        use SFTP to transfer files and SSH to run commands. They differ from Ansible:
+        - "copy" with "src": reads from the controller filesystem and transfers via SFTP.
+          Use "src" for deploying local project files. Relative paths resolve from the
+          working directory. Use "content" for inline text.
+          {{"host": "web01", "module": "copy", "params": {{"src": "nginx.conf", "dest": "/etc/nginx/nginx.conf", "mode": "0644"}}}}
+          {{"host": "web01", "module": "copy", "params": {{"content": "hello", "dest": "/tmp/hello.txt"}}}}
+        - "template" with "src": renders a local Jinja2 template on the controller,
+          then transfers the result via SFTP. Pass template variables as extra params.
+          {{"host": "web01", "module": "template", "params": {{"src": "nginx.conf.j2", "dest": "/etc/nginx/nginx.conf"}}}}
+        - "shell" and "command": run commands on the remote host via SSH directly
+          (not via the module system). Use the "cmd" parameter.
+        - "fetch": downloads a remote file to the controller via SFTP.
+        These modules are idempotent — they check before acting and return changed=false
+        if no change is needed. You do NOT need Ansible lookups, Jinja2 placeholders, or
+        workarounds to read local files. Just use "src" to reference files in the project.
 
         Secrets (API tokens, passwords) are injected automatically via secret_bindings.
         Do NOT read secrets from environment variables or pass them as parameters.
