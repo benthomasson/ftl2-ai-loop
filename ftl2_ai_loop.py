@@ -246,19 +246,22 @@ def load_rules(rules_dir: str | Path) -> list[dict]:
     if not rules_path.exists():
         return []
 
-    # Load config to find disabled rules
+    # Load config to find disabled/broken rules
     config_file = rules_path / "rules.json"
-    disabled = set()
+    config = {}
     if config_file.exists():
         try:
             config = json.loads(config_file.read_text())
-            disabled = set(config.get("disabled", []))
         except (json.JSONDecodeError, ValueError):
             pass
+    disabled = set(config.get("disabled", []))
+    broken = config.get("broken", {})
+    skip = disabled | set(broken)
 
     rules = []
+    config_changed = False
     for rule_file in sorted(rules_path.glob("*.py")):
-        if rule_file.stem in disabled:
+        if rule_file.stem in skip:
             continue
         try:
             spec = importlib.util.spec_from_file_location(rule_file.stem, rule_file)
@@ -276,6 +279,16 @@ def load_rules(rules_dir: str | Path) -> list[dict]:
                     })
         except Exception as e:
             print(f"  Warning: skipping broken rule {rule_file.stem}: {e}")
+            broken[rule_file.stem] = str(e)
+            config_changed = True
+
+    if config_changed:
+        config["broken"] = broken
+        try:
+            config_file.write_text(json.dumps(config, indent=2) + "\n")
+        except Exception:
+            pass
+
     return rules
 
 
