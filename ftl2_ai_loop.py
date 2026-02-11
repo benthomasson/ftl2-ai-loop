@@ -1027,8 +1027,16 @@ def ask_user(ask_data: dict) -> str:
 # --- Execute ---
 
 
+def _action_sort_key(action: dict) -> int:
+    """Sort directory-creation actions before other actions."""
+    if action.get("module") == "file" and action.get("params", {}).get("state") == "directory":
+        return 0
+    return 1
+
+
 async def execute(ftl, actions: list[dict], dry_run: bool = False) -> list[dict]:
     """Execute the decided actions via FTL2 modules."""
+    actions = sorted(actions, key=_action_sort_key)
     results = []
     for action in actions:
         module_name = action["module"]
