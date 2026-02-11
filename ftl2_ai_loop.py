@@ -1162,6 +1162,8 @@ async def reconcile(
     quiet: bool = False,
     secret_bindings: dict | None = None,
     state_file: str | None = None,
+    policy: str | None = None,
+    environment: str = "",
     dev: bool = False,
     initial_observations: list[dict] | None = None,
     audit_log: str | None = None,
@@ -1220,6 +1222,10 @@ async def reconcile(
         automation_kwargs["secret_bindings"] = secret_bindings
     if state_file:
         automation_kwargs["state_file"] = state_file
+    if policy:
+        automation_kwargs["policy"] = policy
+    if environment:
+        automation_kwargs["environment"] = environment
 
     async with automation(**automation_kwargs) as ftl:
         rules = load_rules(rules_dir)
@@ -1900,6 +1906,89 @@ async def review_rules(rules_dir: str = "rules", review_log: str | None = None) 
     return raw
 
 
+async def review_script(script: str, desired_state: str, review_log: str | None = None) -> str | None:
+    """Review a generated script for quality issues."""
+    prompt = textwrap.dedent(f"""\
+        Review the following generated Ansible/FTL2 script for quality issues.
+
+        The script was generated to achieve this desired state:
+        {desired_state}
+
+        Script:
+        {script}
+
+        Analyze the script and report:
+
+        1. NON-IDEMPOTENT OPERATIONS — Places where shell/command+curl is used instead
+           of get_url, or raw shell commands instead of proper modules (apt, yum, copy, etc.).
+
+        2. WRONG MODULE USAGE — Incorrect module parameters, deprecated modules, or
+           modules used in ways that won't work as intended.
+
+        3. ORDERING ISSUES — Tasks that depend on earlier tasks but aren't ordered
+           correctly, or missing handlers/notifications.
+
+        4. HARDCODED VALUES — Values that should use variables, src= file references,
+           or mechanical lookups (like package versions, URLs, paths).
+
+        5. SECURITY ISSUES — Exposed credentials, overly permissive file modes,
+           missing become/privilege escalation where needed, or insecure downloads.
+
+        6. ERROR HANDLING — Missing failed_when/changed_when, ignore_errors used
+           inappropriately, or missing retries on network operations.
+
+        Be specific. Reference task names or line numbers. If everything looks clean, say so.
+    """)
+
+    proc = await asyncio.create_subprocess_exec(
+        "claude", "-p", prompt,
+        stdin=asyncio.subprocess.DEVNULL,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        start_new_session=True,
+    )
+    try:
+        stdout, stderr = await proc.communicate()
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        proc.terminate()
+        await proc.wait()
+        raise KeyboardInterrupt
+    raw = stdout.decode().strip()
+    _log_prompt("script-review", prompt, raw)
+
+    if proc.returncode != 0:
+        print("Script review failed.")
+        return None
+
+    print(raw)
+
+    if review_log:
+        try:
+            dir_path = Path(review_log)
+            dir_path.mkdir(parents=True, exist_ok=True)
+            existing = sorted(dir_path.glob("script-review-*.md"))
+            if existing:
+                try:
+                    n = int(existing[-1].stem.split("-")[-1]) + 1
+                except (IndexError, ValueError):
+                    n = len(existing) + 1
+            else:
+                n = 1
+            ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+            filepath = dir_path / f"script-review-{n:03d}.md"
+            filepath.write_text(
+                f"# Script Review {n:03d}\n\n"
+                f"**Date:** {ts}\n"
+                f"**Desired state:** {desired_state}\n\n"
+                f"{raw}\n"
+            )
+            print(f"  Review written to {filepath}")
+        except Exception:
+            pass
+
+    return raw
+
+
 # --- Post-Convergence Review ---
 
 
@@ -2313,6 +2402,17 @@ async def run_incremental(reconcile_kwargs: dict, plan_file: str | None = None):
                 increments=increments,
             )
 
+            # Review the combined script
+            script_dir = Path(reconcile_kwargs["script_log"])
+            scripts = sorted(script_dir.glob("script-*.py"))
+            if scripts:
+                script_text = scripts[-1].read_text()
+                print("\nReviewing generated script...")
+                await review_script(
+                    script_text, combined_desired,
+                    review_log=reconcile_kwargs.get("review_log"),
+                )
+
     # Review all rules for conflicts
     rules = load_rules(reconcile_kwargs.get("rules_dir", "rules"))
     if rules:
@@ -2450,6 +2550,9 @@ def cli():
     parser.add_argument("-s", "--secret", action="append", default=[], metavar="MODULE.PARAM=ENV_VAR",
                         help="Bind a secret: community.general.linode_v4.access_token=LINODE_TOKEN")
     parser.add_argument("--state-file", help="FTL2 state file for tracking resources")
+    parser.add_argument("--policy", help="YAML policy file to enforce before each module execution")
+    parser.add_argument("--environment", default="",
+                        help="Environment label for policy matching (e.g., prod, staging)")
     parser.add_argument("--audit-log", help="JSON file to append action history after each run")
     parser.add_argument("--prompt-log", help="Directory to write prompt/response pairs (one file per call)")
     parser.add_argument("--review-log", help="Directory to write self-review markdown files (one per run)")
@@ -2508,6 +2611,8 @@ def cli():
         quiet=args.quiet,
         secret_bindings=secret_bindings or None,
         state_file=args.state_file,
+        policy=args.policy,
+        environment=args.environment,
         dev=args.dev,
         audit_log=args.audit_log,
         review_log=args.review_log,
