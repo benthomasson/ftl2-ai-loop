@@ -260,19 +260,22 @@ def load_rules(rules_dir: str | Path) -> list[dict]:
     for rule_file in sorted(rules_path.glob("*.py")):
         if rule_file.stem in disabled:
             continue
-        spec = importlib.util.spec_from_file_location(rule_file.stem, rule_file)
-        if spec and spec.loader:
-            module = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(module)
-            if hasattr(module, "condition") and hasattr(module, "action"):
-                rules.append({
-                    "name": rule_file.stem,
-                    "condition": module.condition,
-                    "action": module.action,
-                    "observe": getattr(module, "observe", []),
-                    "doc": module.__doc__ or "",
-                    "path": str(rule_file),
-                })
+        try:
+            spec = importlib.util.spec_from_file_location(rule_file.stem, rule_file)
+            if spec and spec.loader:
+                module = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(module)
+                if hasattr(module, "condition") and hasattr(module, "action"):
+                    rules.append({
+                        "name": rule_file.stem,
+                        "condition": module.condition,
+                        "action": module.action,
+                        "observe": getattr(module, "observe", []),
+                        "doc": module.__doc__ or "",
+                        "path": str(rule_file),
+                    })
+        except Exception as e:
+            print(f"  Warning: skipping broken rule {rule_file.stem}: {e}")
     return rules
 
 
