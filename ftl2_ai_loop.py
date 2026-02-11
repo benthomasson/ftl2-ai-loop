@@ -554,7 +554,7 @@ def build_prompt(current_state: dict, desired_state: str, rules: list[dict],
 
         Action format (for the "actions" list):
         {{"module": "file", "params": {{"path": "/tmp/test", "state": "directory"}}}}
-        {{"module": "copy", "params": {{"src": "/tmp/source.txt", "dest": "/tmp/dest.txt"}}}}
+        {{"module": "copy", "params": {{"src": "app.conf", "dest": "/etc/app/app.conf", "mode": "0644"}}}}
         {{"module": "shell", "params": {{"cmd": "echo 'hello world' > /tmp/hello.txt"}}}}
         {{"module": "command", "params": {{"cmd": "echo hello"}}}}
         {{"module": "stat", "params": {{"path": "/etc/nginx/nginx.conf"}}}}
@@ -576,6 +576,11 @@ def build_prompt(current_state: dict, desired_state: str, rules: list[dict],
         - The "copy" module supports a "content" parameter for writing text to files. Prefer
           copy over shell for file content — it is idempotent (won't report changed if content matches).
           Example: {{"module": "copy", "params": {{"content": "<h1>Hello</h1>", "dest": "/var/www/html/index.html"}}}}
+        - The "copy" module with "src" reads from the CONTROLLER filesystem (where the AI loop
+          is running) and transfers to the remote host via SFTP. Use "src" to deploy local config
+          files: {{"host": "web01", "module": "copy", "params": {{"src": "nginx.conf", "dest": "/etc/nginx/nginx.conf", "mode": "0644"}}}}
+          Relative paths resolve from the working directory. Use "content" for inline text,
+          "src" for deploying files that exist in the project directory.
         - For remote hosts (Linux servers), use host targeting (the "host" field in actions)
           with dnf/apt/service — they work normally on the remote host.
         - The controller machine may be macOS while managed hosts are Linux. Use observations
