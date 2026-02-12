@@ -1134,28 +1134,28 @@ def _notify_slack(
             else:
                 emoji = ":warning:"
                 status = f"*Incremental partial* — {converged_count}/{total} converged in {_format_duration(duration)}"
-            lines = [f"{emoji} {status}", f"> {desired_state}"]
+            lines = [f"{emoji} {status}", f"> {desired_state}", ""]
             for j, inc in enumerate(increments, 1):
                 inc_emoji = ":white_check_mark:" if inc.get("converged") else ":x:"
-                lines.append(f"  {j}. {inc['desired_state']} {inc_emoji}")
-            lines.append(f"{actions_taken} action(s) taken across {total_iters} iteration(s)")
+                lines.append(f"{inc_emoji} {j}. {inc['desired_state']}")
+            lines.append(f"\n{actions_taken} action(s) taken across {total_iters} iteration(s)")
             text = "\n".join(lines)
         elif error is not None:
             # Error
             run_label = f"Run #{run_number} — " if run_number else ""
-            text = f":warning: *{run_label}Error*\n> {desired_state}\n{error}"
+            text = f":warning: *{run_label}Error*\n> {desired_state}\n\n{error}"
         elif converged:
             # Converged
             text = (
                 f":white_check_mark: *Converged* after {iterations} iteration(s) in {_format_duration(duration)}\n"
-                f"> {desired_state}\n"
+                f"> {desired_state}\n\n"
                 f"{actions_taken} action(s) taken"
             )
         else:
             # Did not converge
             text = (
                 f":x: *Did not converge* after {iterations} iteration(s) in {_format_duration(duration)}\n"
-                f"> {desired_state}\n"
+                f"> {desired_state}\n\n"
                 f"{actions_taken} action(s) taken"
             )
 
