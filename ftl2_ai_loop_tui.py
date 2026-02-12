@@ -232,7 +232,8 @@ class AILoopApp(App):
         prompt_widget.display = True
         input_widget.display = True
         input_widget.value = ""
-        input_widget.focus()
+        # Defer focus until after Textual has re-laid out the newly visible widget
+        self.call_after_refresh(input_widget.focus)
 
     def _hide_ask_input(self) -> None:
         """Hide the ask prompt and input widgets."""
