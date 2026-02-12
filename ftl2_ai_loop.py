@@ -908,14 +908,20 @@ def build_planning_prompt(desired_state: str, user_answers: list[dict] | None = 
     """)
 
 
-async def plan(desired_state: str) -> dict:
+async def plan(desired_state: str, ask_user: "AskUserFunc | None" = None) -> dict:
     """Analyze a desired state and split it into increments via the AI.
+
+    Args:
+        desired_state: The desired state description
+        ask_user: Callable for prompting the user. Defaults to ask_user_stdin.
 
     Returns a dict with:
         increments (list[str]): Ordered list of desired state descriptions
         initial_observations (list[dict]): Observations for the first increment
         user_answers (list[dict]): Any Q&A collected during planning
     """
+    if ask_user is None:
+        ask_user = ask_user_stdin
     user_answers: list[dict] = []
     max_rounds = 3
 
@@ -1009,9 +1015,12 @@ async def review_rule(rule: dict, current_state: dict, desired_state: str) -> di
 
 # --- Ask User ---
 
+# Type alias for ask_user callables
+AskUserFunc = "Callable[[dict], str]"
 
-def ask_user(ask_data: dict) -> str:
-    """Prompt the user for input and return their answer."""
+
+def ask_user_stdin(ask_data: dict) -> str:
+    """Prompt the user for input via stdin and return their answer."""
     question = ask_data["question"]
     options = ask_data.get("options", [])
 
@@ -1038,6 +1047,14 @@ def ask_user(ask_data: dict) -> str:
 
     print(f"  Answer: {answer}")
     return answer
+
+
+def ask_user_noninteractive(ask_data: dict) -> str:
+    """Non-interactive backend: log the question and return no answer."""
+    question = ask_data["question"]
+    print(f"\n  AI asks: {question}")
+    print(f"  (non-interactive mode, skipping)")
+    return "(no answer)"
 
 
 # --- Execute ---
@@ -1174,14 +1191,24 @@ async def reconcile(
     skip_rule_firing: bool = False,
     increments: list[dict] | None = None,
     user_answers: list[dict] | None = None,
+    ask_user: "AskUserFunc | None" = None,
 ):
     """Run the AI reconciliation loop.
+
+    Args:
+        ask_user: Callable for prompting the user. Receives a dict with
+            "question" (str) and optional "options" (list[str]), returns
+            the user's answer as a string. Defaults to ask_user_stdin
+            (interactive terminal). Use ask_user_noninteractive for
+            headless/CI environments.
 
     Returns a dict with:
         converged (bool): Whether the desired state was achieved
         next_observations (list): Observations the AI wants run at the start of the next run
         history (list): Action history from this run
     """
+    if ask_user is None:
+        ask_user = ask_user_stdin
     def _write_audit_log(history, converged, iterations, increments=None):
         """Write the action history to a JSON audit log file."""
         if not audit_log:
@@ -2228,8 +2255,10 @@ def _write_review_log(
 # --- Continuous Mode ---
 
 
-async def run_continuous(reconcile_kwargs: dict, delay: int):
+async def run_continuous(reconcile_kwargs: dict, delay: int, ask_user: "AskUserFunc | None" = None):
     """Run the reconciliation loop continuously with a delay between runs."""
+    if ask_user is None:
+        ask_user = ask_user_noninteractive
     run_count = 0
     next_observations: list[dict] = []
     startup_commit = _get_startup_commit()
@@ -2248,6 +2277,7 @@ async def run_continuous(reconcile_kwargs: dict, delay: int):
                 result = await reconcile(
                     **reconcile_kwargs,
                     initial_observations=next_observations,
+                    ask_user=ask_user,
                 )
                 converged = result["converged"]
                 next_observations = result.get("next_observations", [])
@@ -2272,8 +2302,10 @@ async def run_continuous(reconcile_kwargs: dict, delay: int):
 # --- Incremental Mode ---
 
 
-async def run_incremental(reconcile_kwargs: dict, plan_file: str | None = None):
+async def run_incremental(reconcile_kwargs: dict, plan_file: str | None = None, ask_user: "AskUserFunc | None" = None):
     """Run the reconciliation loop incrementally, prompting for new work after each convergence."""
+    if ask_user is None:
+        ask_user = ask_user_stdin
     increments = []
     all_history = []
     next_observations = None
@@ -2304,7 +2336,7 @@ async def run_incremental(reconcile_kwargs: dict, plan_file: str | None = None):
                 planning_answers = plan_result.get("user_answers", [])
             else:
                 print(f"\nPlanning...")
-                plan_result = await plan(desired_state)
+                plan_result = await plan(desired_state, ask_user=ask_user)
                 planning_answers = plan_result.get("user_answers", [])
 
             increment_queue = list(plan_result["increments"])
@@ -2374,13 +2406,10 @@ async def run_incremental(reconcile_kwargs: dict, plan_file: str | None = None):
                 n += 1
 
             # Prompt for next increment
-            try:
-                next_state = input("\nWhat would you like to do next? (empty to quit): ").strip()
-            except (EOFError, KeyboardInterrupt):
+            answer = ask_user({"question": "What would you like to do next? (empty to quit)"})
+            if not answer or answer == "(no answer)":
                 break
-            if not next_state:
-                break
-            desired_state = next_state
+            desired_state = answer
 
     except KeyboardInterrupt:
         pass
@@ -2572,6 +2601,8 @@ def cli():
                         help="Seconds between reconciliation runs in continuous mode (default: 60)")
     parser.add_argument("-o", "--output", help="Output file for --plan-only to save the plan as JSON")
     parser.add_argument("--plan", help="Load a saved plan JSON file for --incremental (skips planning)")
+    parser.add_argument("--non-interactive", action="store_true",
+                        help="Skip user prompts (for headless/CI/Receptor environments)")
     args = parser.parse_args()
 
     # Resolve desired state from file or positional argument
@@ -2619,17 +2650,20 @@ def cli():
         script_log=args.script_log,
     )
 
+    # Select ask_user backend
+    _ask_user = ask_user_noninteractive if args.non_interactive else ask_user_stdin
+
     try:
         if args.review_rules:
             asyncio.run(review_rules(args.rules_dir, review_log=args.review_log))
         elif args.continuous:
-            asyncio.run(run_continuous(reconcile_kwargs, args.delay))
+            asyncio.run(run_continuous(reconcile_kwargs, args.delay, ask_user=_ask_user))
         elif args.incremental:
-            asyncio.run(run_incremental(reconcile_kwargs, plan_file=args.plan))
+            asyncio.run(run_incremental(reconcile_kwargs, plan_file=args.plan, ask_user=_ask_user))
         elif args.plan_only:
             asyncio.run(run_plan_only(args.desired_state, output_file=args.output))
         else:
-            result = asyncio.run(reconcile(**reconcile_kwargs))
+            result = asyncio.run(reconcile(**reconcile_kwargs, ask_user=_ask_user))
             sys.exit(0 if result["converged"] else 1)
     except KeyboardInterrupt:
         print("\nInterrupted.")
