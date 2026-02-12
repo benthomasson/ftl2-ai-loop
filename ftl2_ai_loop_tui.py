@@ -333,6 +333,7 @@ def run_tui(args, reconcile_kwargs: dict, notify_fn) -> None:
             run_kwargs={
                 "plan_file": args.plan,
                 "notify": notify_fn,
+                "delay": args.delay,
             },
             desired_state=desired_state,
             notify_fn=notify_fn,

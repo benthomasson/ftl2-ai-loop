@@ -2536,7 +2536,7 @@ async def run_continuous(reconcile_kwargs: dict, delay: int, ask_user: "AskUserF
 # --- Incremental Mode ---
 
 
-async def run_incremental(reconcile_kwargs: dict, plan_file: str | None = None, ask_user: "AskUserFunc | None" = None, notify=None):
+async def run_incremental(reconcile_kwargs: dict, plan_file: str | None = None, ask_user: "AskUserFunc | None" = None, notify=None, delay: int = 60):
     """Run the reconciliation loop incrementally, prompting for new work after each convergence."""
     import time as _time
 
@@ -2654,9 +2654,13 @@ async def run_incremental(reconcile_kwargs: dict, plan_file: str | None = None, 
                 n += 1
 
             # Prompt for next increment
-            answer = ask_user({"question": "What would you like to do next?", "options": ["done"]})
+            answer = ask_user({"question": "What would you like to do next?", "options": ["done", "continuous"]})
             if not answer or answer in ("(no answer)", "done", "1"):
                 break
+            if answer in ("continuous", "2"):
+                print(f"\nSwitching to continuous mode (every {delay}s)...")
+                await run_continuous(reconcile_kwargs, delay, ask_user=ask_user_noninteractive, notify=notify)
+                return
             desired_state = answer
 
     except KeyboardInterrupt:
@@ -2954,7 +2958,7 @@ def cli():
         elif args.continuous:
             asyncio.run(run_continuous(reconcile_kwargs, args.delay, ask_user=_ask_user, notify=_notify_fn))
         elif args.incremental:
-            asyncio.run(run_incremental(reconcile_kwargs, plan_file=args.plan, ask_user=_ask_user, notify=_notify_fn))
+            asyncio.run(run_incremental(reconcile_kwargs, plan_file=args.plan, ask_user=_ask_user, notify=_notify_fn, delay=args.delay))
         elif args.plan_only:
             asyncio.run(run_plan_only(args.desired_state, output_file=args.output))
         else:
