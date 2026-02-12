@@ -2579,8 +2579,13 @@ async def run_incremental(reconcile_kwargs: dict, plan_file: str | None = None, 
 
             _print_plan(plan_result)
 
-            # Confirm plan before executing
-            answer = ask_user({"question": "Proceed with this plan?", "options": ["yes", "no"]})
+            # Confirm plan before executing — include plan text in the question
+            # so Slack users can see what they're approving
+            plan_lines = [f"*Plan: {len(increment_queue)} increment(s)*"]
+            for j, inc_state in enumerate(increment_queue, 1):
+                plan_lines.append(f"  {j}. {inc_state}")
+            plan_text = "\n".join(plan_lines)
+            answer = ask_user({"question": f"{plan_text}\n\nProceed with this plan?", "options": ["yes", "no"]})
             if answer.lower() not in ("yes", "1"):
                 print("  Plan rejected.")
                 break
@@ -2647,8 +2652,8 @@ async def run_incremental(reconcile_kwargs: dict, plan_file: str | None = None, 
                 n += 1
 
             # Prompt for next increment
-            answer = ask_user({"question": "What would you like to do next? (empty to quit)"})
-            if not answer or answer == "(no answer)":
+            answer = ask_user({"question": "What would you like to do next?", "options": ["done"]})
+            if not answer or answer in ("(no answer)", "done", "1"):
                 break
             desired_state = answer
 
