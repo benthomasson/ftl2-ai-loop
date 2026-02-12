@@ -1057,6 +1057,124 @@ def ask_user_noninteractive(ask_data: dict) -> str:
     return "(no answer)"
 
 
+def make_ask_user_slack(channel: str, token: str | None = None, poll_interval: int = 30, timeout: int = 0) -> "AskUserFunc":
+    """Create a Slack ask_user backend.
+
+    Posts questions to a Slack channel and polls for thread replies.
+    Uses the Slack Web API with a bot token.
+
+    Args:
+        channel: Slack channel to post to (e.g., "#approvals" or "C01234ABCDE")
+        token: Slack bot token. Defaults to SLACK_BOT_TOKEN env var.
+        poll_interval: Seconds between polling for replies (default: 30)
+        timeout: Max seconds to wait for a reply (0 = no timeout, default: 0)
+
+    Returns:
+        A callable suitable for use as an ask_user backend.
+    """
+    import time
+    import urllib.request
+    import urllib.parse
+
+    bot_token = token or os.environ.get("SLACK_BOT_TOKEN")
+    if not bot_token:
+        raise ValueError(
+            "Slack bot token required. Set SLACK_BOT_TOKEN env var "
+            "or pass token= to make_ask_user_slack()."
+        )
+
+    def _slack_api(method: str, payload: dict, use_get: bool = False) -> dict:
+        """Call a Slack Web API method."""
+        headers = {"Authorization": f"Bearer {bot_token}"}
+        if use_get:
+            qs = urllib.parse.urlencode(payload)
+            req = urllib.request.Request(
+                f"https://slack.com/api/{method}?{qs}",
+                headers=headers,
+            )
+        else:
+            data = json.dumps(payload).encode()
+            headers["Content-Type"] = "application/json"
+            req = urllib.request.Request(
+                f"https://slack.com/api/{method}",
+                data=data,
+                headers=headers,
+            )
+        with urllib.request.urlopen(req) as resp:
+            result = json.loads(resp.read())
+        if not result.get("ok"):
+            raise RuntimeError(f"Slack API {method} failed: {result.get('error', result)}")
+        return result
+
+    def ask_user_slack(ask_data: dict) -> str:
+        """Post a question to Slack and poll for a thread reply."""
+        question = ask_data["question"]
+        options = ask_data.get("options", [])
+
+        # Build message text
+        text = f":question: *Approval needed*\n\n{question}"
+        if options:
+            text += "\n\nOptions:"
+            for j, opt in enumerate(options, 1):
+                text += f"\n  {j}. {opt}"
+            text += "\n\nReply with a number or a custom answer."
+        else:
+            text += "\n\nReply in this thread to answer."
+
+        # Post the question
+        print(f"\n  AI asks (via Slack {channel}): {question}")
+        result = _slack_api("chat.postMessage", {
+            "channel": channel,
+            "text": text,
+        })
+        thread_ts = result["ts"]
+        post_channel = result["channel"]  # resolved channel ID
+        print(f"  Waiting for reply in Slack...")
+
+        # Poll for thread replies
+        start = time.time()
+        while True:
+            if timeout > 0 and (time.time() - start) > timeout:
+                print(f"  Slack reply timed out after {timeout}s")
+                _slack_api("chat.postMessage", {
+                    "channel": post_channel,
+                    "thread_ts": thread_ts,
+                    "text": ":hourglass: Timed out waiting for reply. Continuing with no answer.",
+                })
+                return "(no answer)"
+
+            time.sleep(poll_interval)
+
+            replies = _slack_api("conversations.replies", {
+                "channel": post_channel,
+                "ts": thread_ts,
+            }, use_get=True)
+            messages = replies.get("messages", [])
+            # First message is the question itself; any after that are replies
+            if len(messages) > 1:
+                answer = messages[-1]["text"].strip()
+
+                # Resolve numbered option
+                if options and answer.isdigit():
+                    idx = int(answer) - 1
+                    if 0 <= idx < len(options):
+                        answer = options[idx]
+
+                if not answer:
+                    answer = "(no answer)"
+
+                print(f"  Slack reply: {answer}")
+                # Acknowledge in thread
+                _slack_api("chat.postMessage", {
+                    "channel": post_channel,
+                    "thread_ts": thread_ts,
+                    "text": f":white_check_mark: Received: {answer}",
+                })
+                return answer
+
+    return ask_user_slack
+
+
 # --- Execute ---
 
 
@@ -2603,6 +2721,12 @@ def cli():
     parser.add_argument("--plan", help="Load a saved plan JSON file for --incremental (skips planning)")
     parser.add_argument("--non-interactive", action="store_true",
                         help="Skip user prompts (for headless/CI/Receptor environments)")
+    parser.add_argument("--ask-via-slack", metavar="CHANNEL",
+                        help="Post AI questions to a Slack channel and poll for replies (e.g., '#approvals')")
+    parser.add_argument("--slack-poll-interval", type=int, default=30,
+                        help="Seconds between polling Slack for replies (default: 30)")
+    parser.add_argument("--slack-timeout", type=int, default=0,
+                        help="Max seconds to wait for a Slack reply (0 = no timeout, default: 0)")
     args = parser.parse_args()
 
     # Resolve desired state from file or positional argument
@@ -2651,7 +2775,16 @@ def cli():
     )
 
     # Select ask_user backend
-    _ask_user = ask_user_noninteractive if args.non_interactive else ask_user_stdin
+    if args.ask_via_slack:
+        _ask_user = make_ask_user_slack(
+            channel=args.ask_via_slack,
+            poll_interval=args.slack_poll_interval,
+            timeout=args.slack_timeout,
+        )
+    elif args.non_interactive:
+        _ask_user = ask_user_noninteractive
+    else:
+        _ask_user = ask_user_stdin
 
     try:
         if args.review_rules:
