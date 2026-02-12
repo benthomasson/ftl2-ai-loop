@@ -1051,9 +1051,13 @@ def ask_user_stdin(ask_data: dict) -> str:
 
 
 def ask_user_noninteractive(ask_data: dict) -> str:
-    """Non-interactive backend: log the question and return no answer."""
+    """Non-interactive backend: auto-approve by selecting first option, or return no answer."""
     question = ask_data["question"]
+    options = ask_data.get("options", [])
     print(f"\n  AI asks: {question}")
+    if options:
+        print(f"  (non-interactive mode, auto-selecting: {options[0]})")
+        return options[0]
     print(f"  (non-interactive mode, skipping)")
     return "(no answer)"
 
@@ -2465,7 +2469,7 @@ async def run_incremental(reconcile_kwargs: dict, plan_file: str | None = None, 
 
             # Confirm plan before executing
             answer = ask_user({"question": "Proceed with this plan?", "options": ["yes", "no"]})
-            if answer.lower() in ("no", "2"):
+            if answer.lower() not in ("yes", "1"):
                 print("  Plan rejected.")
                 break
 
