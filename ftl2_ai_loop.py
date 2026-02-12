@@ -2463,6 +2463,12 @@ async def run_incremental(reconcile_kwargs: dict, plan_file: str | None = None, 
 
             _print_plan(plan_result)
 
+            # Confirm plan before executing
+            answer = ask_user({"question": "Proceed with this plan?", "options": ["yes", "no"]})
+            if answer.lower() in ("no", "2"):
+                print("  Plan rejected.")
+                break
+
             # Execute each planned increment
             first_in_plan = True
             while increment_queue:
