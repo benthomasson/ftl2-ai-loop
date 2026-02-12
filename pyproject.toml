@@ -17,5 +17,8 @@ dependencies = [
 [project.scripts]
 ftl2-ai-loop = "ftl2_ai_loop:cli"
 
+[tool.hatch.build.targets.wheel]
+packages = ["ftl2_ai_loop.py", "ftl2_ai_loop_tui.py"]
+
 [tool.hatch.metadata]
 allow-direct-references = true
