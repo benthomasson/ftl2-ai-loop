@@ -1229,7 +1229,8 @@ def make_ask_user_slack(channel: str, token: str | None = None, poll_interval: i
                 }, bot_token=bot_token)
                 return "(no answer)"
 
-            time.sleep(poll_interval)
+            elapsed = time.time() - start
+            time.sleep(5 if elapsed < 60 else poll_interval)
 
             replies = _slack_api("conversations.replies", {
                 "channel": post_channel,
