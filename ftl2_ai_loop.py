@@ -54,6 +54,19 @@ def _log_prompt(label: str, prompt: str, response: str) -> None:
         print(f"  Failed to write prompt log: {e}")
 
 
+def _format_duration(seconds: float) -> str:
+    """Format a duration in seconds to a human-readable string."""
+    if seconds < 60:
+        return f"{seconds:.0f}s"
+    minutes = int(seconds // 60)
+    secs = int(seconds % 60)
+    if minutes < 60:
+        return f"{minutes}m {secs}s" if secs else f"{minutes}m"
+    hours = minutes // 60
+    mins = minutes % 60
+    return f"{hours}h {mins}m" if mins else f"{hours}h"
+
+
 # --- Version Check ---
 
 
@@ -1062,6 +1075,98 @@ def ask_user_noninteractive(ask_data: dict) -> str:
     return "(no answer)"
 
 
+def _slack_api(method: str, payload: dict, bot_token: str, use_get: bool = False) -> dict:
+    """Call a Slack Web API method.
+
+    Args:
+        method: Slack API method name (e.g., "chat.postMessage").
+        payload: Request payload dict.
+        bot_token: Slack bot token for authorization.
+        use_get: Use GET instead of POST (for read-only endpoints).
+    """
+    import urllib.request
+    import urllib.parse
+
+    headers = {"Authorization": f"Bearer {bot_token}"}
+    if use_get:
+        qs = urllib.parse.urlencode(payload)
+        req = urllib.request.Request(
+            f"https://slack.com/api/{method}?{qs}",
+            headers=headers,
+        )
+    else:
+        data = json.dumps(payload).encode()
+        headers["Content-Type"] = "application/json"
+        req = urllib.request.Request(
+            f"https://slack.com/api/{method}",
+            data=data,
+            headers=headers,
+        )
+    with urllib.request.urlopen(req) as resp:
+        result = json.loads(resp.read())
+    if not result.get("ok"):
+        raise RuntimeError(f"Slack API {method} failed: {result.get('error', result)}")
+    return result
+
+
+def _notify_slack(
+    channel: str,
+    bot_token: str,
+    desired_state: str,
+    converged: bool,
+    iterations: int,
+    actions_taken: int,
+    duration: float,
+    error: Exception | None = None,
+    run_number: int | None = None,
+    increments: list[dict] | None = None,
+) -> None:
+    """Post a run summary to Slack. Fire-and-forget — never raises."""
+    try:
+        if increments is not None:
+            # Incremental summary
+            total = len(increments)
+            converged_count = sum(1 for i in increments if i.get("converged"))
+            total_iters = sum(i.get("iterations", 0) for i in increments)
+            if converged_count == total:
+                emoji = ":white_check_mark:"
+                status = f"*Incremental complete* — {converged_count}/{total} converged in {_format_duration(duration)}"
+            else:
+                emoji = ":warning:"
+                status = f"*Incremental partial* — {converged_count}/{total} converged in {_format_duration(duration)}"
+            lines = [f"{emoji} {status}", f"> {desired_state}"]
+            for j, inc in enumerate(increments, 1):
+                inc_emoji = ":white_check_mark:" if inc.get("converged") else ":x:"
+                lines.append(f"  {j}. {inc['desired_state']} {inc_emoji}")
+            lines.append(f"{actions_taken} action(s) taken across {total_iters} iteration(s)")
+            text = "\n".join(lines)
+        elif error is not None:
+            # Error
+            run_label = f"Run #{run_number} — " if run_number else ""
+            text = f":warning: *{run_label}Error*\n> {desired_state}\n{error}"
+        elif converged:
+            # Converged
+            text = (
+                f":white_check_mark: *Converged* after {iterations} iteration(s) in {_format_duration(duration)}\n"
+                f"> {desired_state}\n"
+                f"{actions_taken} action(s) taken"
+            )
+        else:
+            # Did not converge
+            text = (
+                f":x: *Did not converge* after {iterations} iteration(s) in {_format_duration(duration)}\n"
+                f"> {desired_state}\n"
+                f"{actions_taken} action(s) taken"
+            )
+
+        _slack_api("chat.postMessage", {
+            "channel": channel,
+            "text": text,
+        }, bot_token=bot_token)
+    except Exception as e:
+        print(f"  Warning: Slack notification failed: {e}")
+
+
 def make_ask_user_slack(channel: str, token: str | None = None, poll_interval: int = 30, timeout: int = 0) -> "AskUserFunc":
     """Create a Slack ask_user backend.
 
@@ -1078,8 +1183,6 @@ def make_ask_user_slack(channel: str, token: str | None = None, poll_interval: i
         A callable suitable for use as an ask_user backend.
     """
     import time
-    import urllib.request
-    import urllib.parse
 
     bot_token = token or os.environ.get("SLACK_BOT_TOKEN")
     if not bot_token:
@@ -1087,29 +1190,6 @@ def make_ask_user_slack(channel: str, token: str | None = None, poll_interval: i
             "Slack bot token required. Set SLACK_BOT_TOKEN env var "
             "or pass token= to make_ask_user_slack()."
         )
-
-    def _slack_api(method: str, payload: dict, use_get: bool = False) -> dict:
-        """Call a Slack Web API method."""
-        headers = {"Authorization": f"Bearer {bot_token}"}
-        if use_get:
-            qs = urllib.parse.urlencode(payload)
-            req = urllib.request.Request(
-                f"https://slack.com/api/{method}?{qs}",
-                headers=headers,
-            )
-        else:
-            data = json.dumps(payload).encode()
-            headers["Content-Type"] = "application/json"
-            req = urllib.request.Request(
-                f"https://slack.com/api/{method}",
-                data=data,
-                headers=headers,
-            )
-        with urllib.request.urlopen(req) as resp:
-            result = json.loads(resp.read())
-        if not result.get("ok"):
-            raise RuntimeError(f"Slack API {method} failed: {result.get('error', result)}")
-        return result
 
     def ask_user_slack(ask_data: dict) -> str:
         """Post a question to Slack and poll for a thread reply."""
@@ -1131,7 +1211,7 @@ def make_ask_user_slack(channel: str, token: str | None = None, poll_interval: i
         result = _slack_api("chat.postMessage", {
             "channel": channel,
             "text": text,
-        })
+        }, bot_token=bot_token)
         thread_ts = result["ts"]
         post_channel = result["channel"]  # resolved channel ID
         print(f"  Waiting for reply in Slack...")
@@ -1145,7 +1225,7 @@ def make_ask_user_slack(channel: str, token: str | None = None, poll_interval: i
                     "channel": post_channel,
                     "thread_ts": thread_ts,
                     "text": ":hourglass: Timed out waiting for reply. Continuing with no answer.",
-                })
+                }, bot_token=bot_token)
                 return "(no answer)"
 
             time.sleep(poll_interval)
@@ -1153,7 +1233,7 @@ def make_ask_user_slack(channel: str, token: str | None = None, poll_interval: i
             replies = _slack_api("conversations.replies", {
                 "channel": post_channel,
                 "ts": thread_ts,
-            }, use_get=True)
+            }, bot_token=bot_token, use_get=True)
             messages = replies.get("messages", [])
             # First message is the question itself; any after that are replies
             if len(messages) > 1:
@@ -1174,7 +1254,7 @@ def make_ask_user_slack(channel: str, token: str | None = None, poll_interval: i
                     "channel": post_channel,
                     "thread_ts": thread_ts,
                     "text": f":white_check_mark: Received: {answer}",
-                })
+                }, bot_token=bot_token)
                 return answer
 
     return ask_user_slack
@@ -2378,8 +2458,10 @@ def _write_review_log(
 # --- Continuous Mode ---
 
 
-async def run_continuous(reconcile_kwargs: dict, delay: int, ask_user: "AskUserFunc | None" = None):
+async def run_continuous(reconcile_kwargs: dict, delay: int, ask_user: "AskUserFunc | None" = None, notify=None):
     """Run the reconciliation loop continuously with a delay between runs."""
+    import time as _time
+
     if ask_user is None:
         ask_user = ask_user_noninteractive
     run_count = 0
@@ -2396,6 +2478,8 @@ async def run_continuous(reconcile_kwargs: dict, delay: int, ask_user: "AskUserF
             print(f"Run #{run_count} — {timestamp}")
             print(f"{'=' * 60}")
 
+            _run_error = None
+            _t0 = _time.monotonic()
             try:
                 result = await reconcile(
                     **reconcile_kwargs,
@@ -2410,6 +2494,31 @@ async def run_continuous(reconcile_kwargs: dict, delay: int, ask_user: "AskUserF
                 traceback.print_exc()
                 next_observations = []
                 status = "error"
+                _run_error = e
+                result = None
+            _duration = _time.monotonic() - _t0
+
+            if notify:
+                if _run_error is not None:
+                    notify(
+                        desired_state=reconcile_kwargs["desired_state"],
+                        converged=False,
+                        iterations=0,
+                        actions_taken=0,
+                        duration=_duration,
+                        error=_run_error,
+                        run_number=run_count,
+                    )
+                elif result is not None:
+                    _total_actions = sum(len(h.get("actions", [])) for h in result.get("history", []))
+                    notify(
+                        desired_state=reconcile_kwargs["desired_state"],
+                        converged=result["converged"],
+                        iterations=len(result.get("history", [])),
+                        actions_taken=_total_actions,
+                        duration=_duration,
+                        run_number=run_count,
+                    )
 
             print(f"\nRun #{run_count} {status}. Next run in {delay}s...\n")
 
@@ -2425,13 +2534,16 @@ async def run_continuous(reconcile_kwargs: dict, delay: int, ask_user: "AskUserF
 # --- Incremental Mode ---
 
 
-async def run_incremental(reconcile_kwargs: dict, plan_file: str | None = None, ask_user: "AskUserFunc | None" = None):
+async def run_incremental(reconcile_kwargs: dict, plan_file: str | None = None, ask_user: "AskUserFunc | None" = None, notify=None):
     """Run the reconciliation loop incrementally, prompting for new work after each convergence."""
+    import time as _time
+
     if ask_user is None:
         ask_user = ask_user_stdin
     increments = []
     all_history = []
     next_observations = None
+    _t0 = _time.monotonic()
 
     desired_state = reconcile_kwargs["desired_state"]
     n = 1
@@ -2544,6 +2656,18 @@ async def run_incremental(reconcile_kwargs: dict, plan_file: str | None = None, 
         pass
 
     print(f"\nDone. {len(increments)} increment(s) completed.")
+
+    if notify and increments:
+        _duration = _time.monotonic() - _t0
+        _total_actions = sum(len(h.get("actions", [])) for h in all_history)
+        notify(
+            desired_state=desired_state,
+            converged=all(i.get("converged") for i in increments),
+            iterations=sum(i.get("iterations", 0) for i in increments),
+            actions_taken=_total_actions,
+            duration=_duration,
+            increments=increments,
+        )
 
     # Generate a combined script covering all increments
     if reconcile_kwargs.get("script_log") and all_history:
@@ -2738,6 +2862,8 @@ def cli():
                         help="Seconds between polling Slack for replies (default: 30)")
     parser.add_argument("--slack-timeout", type=int, default=0,
                         help="Max seconds to wait for a Slack reply (0 = no timeout, default: 0)")
+    parser.add_argument("--notify-slack", metavar="CHANNEL",
+                        help="Post run summaries to a Slack channel (e.g., '#deploys'). Requires SLACK_BOT_TOKEN.")
     args = parser.parse_args()
 
     # Resolve desired state from file or positional argument
@@ -2797,17 +2923,40 @@ def cli():
     else:
         _ask_user = ask_user_stdin
 
+    # Resolve Slack notification callback
+    _notify_fn = None
+    if args.notify_slack:
+        _notify_token = os.environ.get("SLACK_BOT_TOKEN")
+        if not _notify_token:
+            parser.error("--notify-slack requires SLACK_BOT_TOKEN env var to be set")
+        _notify_channel = args.notify_slack
+
+        def _notify_fn(**kwargs):
+            _notify_slack(channel=_notify_channel, bot_token=_notify_token, **kwargs)
+
     try:
         if args.review_rules:
             asyncio.run(review_rules(args.rules_dir, review_log=args.review_log))
         elif args.continuous:
-            asyncio.run(run_continuous(reconcile_kwargs, args.delay, ask_user=_ask_user))
+            asyncio.run(run_continuous(reconcile_kwargs, args.delay, ask_user=_ask_user, notify=_notify_fn))
         elif args.incremental:
-            asyncio.run(run_incremental(reconcile_kwargs, plan_file=args.plan, ask_user=_ask_user))
+            asyncio.run(run_incremental(reconcile_kwargs, plan_file=args.plan, ask_user=_ask_user, notify=_notify_fn))
         elif args.plan_only:
             asyncio.run(run_plan_only(args.desired_state, output_file=args.output))
         else:
+            import time as _time
+            _t0 = _time.monotonic()
             result = asyncio.run(reconcile(**reconcile_kwargs, ask_user=_ask_user))
+            _duration = _time.monotonic() - _t0
+            if _notify_fn:
+                _total_actions = sum(len(h.get("actions", [])) for h in result.get("history", []))
+                _notify_fn(
+                    desired_state=args.desired_state,
+                    converged=result["converged"],
+                    iterations=len(result.get("history", [])),
+                    actions_taken=_total_actions,
+                    duration=_duration,
+                )
             sys.exit(0 if result["converged"] else 1)
     except KeyboardInterrupt:
         print("\nInterrupted.")
