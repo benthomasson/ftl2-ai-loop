@@ -134,6 +134,10 @@ ftl2-ai-loop -f desired_state.md --incremental \
 | `--prompt-log` | Directory to write prompt/response pairs |
 | `--review-log` | Directory to write self-review markdown files |
 | `--script-log` | Directory to write generated FTL2 scripts |
+| `--non-interactive` | Skip user prompts (auto-selects first option for plan confirmation) |
+| `--ask-via-slack CHANNEL` | Post questions to a Slack channel and poll for thread replies |
+| `--slack-poll-interval` | Seconds between Slack polls (default: 30) |
+| `--slack-timeout` | Seconds before Slack question times out, 0 for no timeout (default: 0) |
 | `-f, --file` | Read desired state from a file instead of the command line |
 
 ## Rules
@@ -308,6 +312,38 @@ The AI uses this when:
 - It needs information it can't observe (domain names, preferences)
 - It wants to confirm before a destructive action
 - It's stuck after multiple failed attempts
+
+### Pluggable Backends
+
+The `ask_user` interface is pluggable — the AI loop calls `ask_user({"question": "...", "options": [...]})` and the backend handles how the question reaches a human.
+
+| Backend | Flag | Description |
+|---------|------|-------------|
+| stdin | *(default)* | Interactive terminal prompt |
+| non-interactive | `--non-interactive` | Auto-selects first option, no human needed |
+| Slack | `--ask-via-slack CHANNEL` | Posts to Slack, polls for thread replies |
+
+Custom backends can be passed programmatically via `reconcile(ask_user=my_backend)`.
+
+### Slack Approvals
+
+Post questions to a Slack channel and wait for a human to reply in the thread. No webhooks, no inbound networking — works from inside an execution environment or behind NAT.
+
+```bash
+SLACK_BOT_TOKEN=xoxb-... \
+ftl2-ai-loop "ensure nginx is running" \
+  --incremental \
+  --ask-via-slack "#approvals" \
+  --slack-poll-interval 5 \
+  --slack-timeout 300
+```
+
+Requires a Slack App with bot token (`xoxb-`):
+- `chat:write` scope — post messages
+- `channels:history` scope — read thread replies
+- Bot must be invited to the channel (`/invite @botname`)
+
+In `--incremental` mode, plan confirmation is posted to Slack before any increments execute. Only an explicit "yes" proceeds — timeouts and "no" both reject the plan.
 
 ## Programmatic Usage
 

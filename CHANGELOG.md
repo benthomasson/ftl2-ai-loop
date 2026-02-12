@@ -46,3 +46,30 @@ After convergence, the action history is mechanically translated into a standalo
 ## Policy Support (Feb 11)
 
 `--policy` and `--environment` CLI flags thread the FTL2 policy engine into the reconciliation loop. Every module execution — whether from a rule or an AI decision — is checked against policy before running. Deny rules raise `PolicyDeniedError`.
+
+## Pluggable Ask User Backends (Feb 11)
+
+The `ask_user` function is now a pluggable callable. The AI loop calls `ask_user({"question": "...", "options": [...]})` and doesn't care which backend handles it. Three built-in backends:
+
+- **stdin** (default) — interactive terminal, `input()` blocks until user responds
+- **non-interactive** (`--non-interactive`) — auto-selects first option when options provided, returns "(no answer)" otherwise. Used automatically in `--continuous` mode
+- **Slack** (`--ask-via-slack CHANNEL`) — posts questions to a Slack channel, polls for thread replies
+
+All entry points (`reconcile()`, `plan()`, `run_incremental()`, `run_continuous()`) accept an `ask_user` callable. Custom backends just need to implement `def backend(ask_data: dict) -> str`.
+
+## Slack Approval Backend (Feb 11)
+
+`make_ask_user_slack()` factory returns a configured `ask_user` callable that posts questions to Slack and polls for thread replies. Uses `urllib.request` from stdlib — zero extra dependencies.
+
+- Posts questions via `chat.postMessage` with emoji formatting and numbered options
+- Polls `conversations.replies` (GET) for thread replies
+- Resolves numbered option picks (reply "1" → "yes")
+- Posts acknowledgment in thread when answer received
+- Configurable poll interval and timeout
+- Timeout rejects plan confirmation (safe default)
+
+Requires a Slack App with bot token (`xoxb-`), `chat:write` and `channels:history` scopes. No webhooks, no inbound networking — works from inside an EE or behind NAT.
+
+## Plan Confirmation (Feb 11)
+
+In `--incremental` mode, the plan is confirmed through whatever `ask_user` backend is active before any increments execute. Only an explicit "yes" proceeds — timeouts, no-answer, and "no" all reject. Non-interactive mode auto-approves (selects first option).
