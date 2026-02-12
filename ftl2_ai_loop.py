@@ -2558,8 +2558,16 @@ async def run_incremental(reconcile_kwargs: dict, plan_file: str | None = None, 
     next_observations = None
     _t0 = _time.monotonic()
 
-    desired_state = reconcile_kwargs["desired_state"]
+    desired_state = reconcile_kwargs.get("desired_state") or ""
     n = 1
+
+    # Prompt for desired state if not provided
+    if not desired_state:
+        desired_state = ask_user({"question": "What would you like to do?"})
+        if not desired_state or desired_state == "(no answer)":
+            print("No desired state provided. Exiting.")
+            return
+        reconcile_kwargs["desired_state"] = desired_state
 
     # Load a saved plan if provided
     loaded_plan = None
@@ -2902,7 +2910,7 @@ def cli():
             args.desired_state = Path(args.file).read_text().strip()
         except Exception as e:
             parser.error(f"Cannot read file {args.file!r}: {e}")
-    if not args.desired_state and not args.review_rules:
+    if not args.desired_state and not args.review_rules and not args.incremental:
         parser.error("desired_state is required (positional argument or -f/--file)")
 
     # Parse secret bindings: "module.param=ENV_VAR" → {"module": {"param": "ENV_VAR"}}
