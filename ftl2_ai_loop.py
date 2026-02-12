@@ -2658,6 +2658,12 @@ async def run_incremental(reconcile_kwargs: dict, plan_file: str | None = None, 
             if not answer or answer in ("(no answer)", "done", "1"):
                 break
             if answer in ("continuous", "2"):
+                # Review rules before entering continuous mode
+                rules = load_rules(reconcile_kwargs.get("rules_dir", "rules"))
+                if rules:
+                    print("\nReviewing rules before entering continuous mode...")
+                    await review_rules(reconcile_kwargs.get("rules_dir", "rules"),
+                                       review_log=reconcile_kwargs.get("review_log"))
                 print(f"\nSwitching to continuous mode (every {delay}s)...")
                 await run_continuous(reconcile_kwargs, delay, ask_user=ask_user_noninteractive, notify=notify)
                 return
