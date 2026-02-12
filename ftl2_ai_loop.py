@@ -329,16 +329,24 @@ async def _run_rule_observations(rule: dict, ftl, state: dict) -> dict:
     return merged
 
 
-async def check_rules(rules: list[dict], state: dict, ftl, dry_run: bool = False) -> bool:
+async def check_rules(rules: list[dict], state: dict, ftl, dry_run: bool = False) -> tuple[bool, dict]:
     """Check if any rule matches the current state and execute it.
 
-    Returns True if a rule handled the situation successfully.
-    Returns False if no rule matched or the matching rule's action failed
+    Returns (True, rule_obs) if a rule handled the situation successfully.
+    Returns (False, rule_obs) if no rule matched or the matching rule's action failed
     (so the AI gets a chance to handle it).
+
+    rule_obs contains any observations collected by rules during evaluation,
+    so callers can merge them into the current state for the AI to see.
     """
+    all_rule_obs = {}
     for rule in rules:
         try:
             eval_state = await _run_rule_observations(rule, ftl, state)
+            # Collect rule observations (keys added beyond original state)
+            for k, v in eval_state.items():
+                if k not in state:
+                    all_rule_obs[k] = v
             if await rule["condition"](eval_state):
                 print(f"  Rule matched: {rule['name']}")
                 if not dry_run:
@@ -349,19 +357,19 @@ async def check_rules(rules: list[dict], state: dict, ftl, dry_run: bool = False
                         print(f"  Rule {rule['name']} action failed: {e}")
                         traceback.print_exc()
                         print(f"  Falling through to AI...")
-                        return False
+                        return False, all_rule_obs
                     # Check if any module failures occurred during the action
                     errors_after = len(ftl.errors) if hasattr(ftl, 'errors') else 0
                     if errors_after > errors_before:
                         print(f"  Rule {rule['name']} had module failures, falling through to AI...")
-                        return False
+                        return False, all_rule_obs
                 else:
                     print(f"  DRY RUN: would execute rule {rule['name']}")
-                return True
+                return True, all_rule_obs
         except Exception as e:
             print(f"  Rule {rule['name']} condition error: {e}")
             traceback.print_exc()
-    return False
+    return False, all_rule_obs
 
 
 async def find_matching_rule(rules: list[dict], state: dict, ftl) -> dict | None:
@@ -1544,7 +1552,10 @@ async def reconcile(
                 consecutive_rule_runs = 0
             else:
                 # Normal mode: rules fire without AI review
-                if consecutive_rule_runs < 1 and await check_rules(rules, current_state, ftl, dry_run):
+                rule_handled, rule_obs = await check_rules(rules, current_state, ftl, dry_run)
+                if rule_obs:
+                    current_state.update(rule_obs)
+                if consecutive_rule_runs < 1 and rule_handled:
                     print("Rule handled the situation.\n")
                     extra_observers = []
                     consecutive_rule_runs += 1
