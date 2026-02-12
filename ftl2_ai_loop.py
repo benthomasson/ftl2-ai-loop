@@ -2871,6 +2871,8 @@ def cli():
                         help="Max seconds to wait for a Slack reply (0 = no timeout, default: 0)")
     parser.add_argument("--notify-slack", metavar="CHANNEL",
                         help="Post run summaries to a Slack channel (e.g., '#deploys'). Requires SLACK_BOT_TOKEN.")
+    parser.add_argument("--tui", action="store_true",
+                        help="Run with full-screen terminal UI")
     args = parser.parse_args()
 
     # Resolve desired state from file or positional argument
@@ -2940,6 +2942,11 @@ def cli():
 
         def _notify_fn(**kwargs):
             _notify_slack(channel=_notify_channel, bot_token=_notify_token, **kwargs)
+
+    if args.tui:
+        from ftl2_ai_loop_tui import run_tui
+        run_tui(args, reconcile_kwargs, _notify_fn)
+        return
 
     try:
         if args.review_rules:
