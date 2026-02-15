@@ -919,6 +919,15 @@ def build_planning_prompt(desired_state: str, user_answers: list[dict] | None = 
         you may ask up to 2 clarifying questions. Only ask when the ambiguity would change the
         plan structure (e.g., which provider, which OS, which approach). Do NOT ask questions
         for things you can reasonably assume or decide yourself.
+
+        Also identify any questions you anticipate needing to ask during execution — things
+        you can't determine from the desired state alone (e.g., specific repo URLs, domain
+        names, SSH keys, provider preferences). These help the user prepare answers in advance.
+
+        Identify any secrets or credentials the plan will require. Specify the module and
+        parameter name so the user can prepare -s bindings. Common examples:
+        - community.general.linode_v4.access_token → Linode API token
+        - community.general.github_repo.token → GitHub personal access token
         {answers_summary}
         Desired state: {desired_state}
 
@@ -930,6 +939,12 @@ def build_planning_prompt(desired_state: str, user_answers: list[dict] | None = 
           ],
           "questions": [
             {{"question": "Which SSL provider?", "options": ["Let's Encrypt", "Self-signed"]}}
+          ],
+          "anticipated_questions": [
+            "What is the GitHub organization and repo name for ftl2-htop?"
+          ],
+          "required_secrets": [
+            {{"module": "community.general.linode_v4", "param": "access_token", "description": "Linode API token"}}
           ]
         }}
 
@@ -939,6 +954,8 @@ def build_planning_prompt(desired_state: str, user_answers: list[dict] | None = 
         - "questions" is optional — only include if you genuinely need clarification
         - If you include "questions", leave "increments" as your best guess (they will be
           re-planned after the user answers)
+        - "anticipated_questions" is optional — questions the AI expects to need during execution
+        - "required_secrets" is optional — secrets/credentials needed, as module.param pairs
     """)
 
 
@@ -1011,6 +1028,8 @@ async def plan(desired_state: str, ask_user: "AskUserFunc | None" = None) -> dic
             "increments": increments,
             "initial_observations": initial_observations,
             "user_answers": user_answers,
+            "anticipated_questions": result.get("anticipated_questions", []),
+            "required_secrets": result.get("required_secrets", []),
         }
 
     # Exhausted question rounds — use whatever we got
@@ -2792,6 +2811,21 @@ def _print_plan(plan_result: dict):
                 print(f"    - {host}: {module}({params_str}) as '{obs.get('name', '?')}'")
             else:
                 print(f"    - {module}({params_str}) as '{obs.get('name', '?')}'")
+
+    anticipated = plan_result.get("anticipated_questions", [])
+    if anticipated:
+        print(f"  Anticipated questions:")
+        for q in anticipated:
+            print(f"    - {q}")
+
+    secrets = plan_result.get("required_secrets", [])
+    if secrets:
+        print(f"\n  Required secrets:")
+        for s in secrets:
+            module = s.get("module", "?")
+            param = s.get("param", "?")
+            desc = s.get("description", "")
+            print(f"    -s {module}.{param}=...  ({desc})")
 
     print()
 
