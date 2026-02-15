@@ -538,11 +538,21 @@ def _no_action_warning(history: list[dict]) -> str:
             f"ask the user for help.")
 
 
+def _ask_delay_warning(history: list[dict], max_ask_delay: int, consecutive_failed_no_ask: int) -> str:
+    if max_ask_delay <= 0 or consecutive_failed_no_ask < max_ask_delay:
+        return ""
+    return (f"\nMANDATORY: You have had {consecutive_failed_no_ask} consecutive iterations "
+            f"with failed actions without asking the user for help. You MUST use \"ask\" "
+            f"this iteration to request guidance. Set \"actions\" to [] and provide a "
+            f"question about what is going wrong.")
+
+
 def build_prompt(current_state: dict, desired_state: str, rules: list[dict],
                  history: list[dict], user_answers: list[dict] | None = None,
                  rule_results: list[dict] | None = None,
                  iteration: int = 0, max_iterations: int = 10,
-                 prior_increments: list[dict] | None = None) -> str:
+                 prior_increments: list[dict] | None = None,
+                 max_ask_delay: int = 0, consecutive_failed_no_ask: int = 0) -> str:
     """Build the prompt for the LLM decision step."""
     rules_summary = ""
     if rules:
@@ -711,7 +721,7 @@ def build_prompt(current_state: dict, desired_state: str, rules: list[dict],
         {state_json}
         {rules_summary}{history_summary}{answers_summary}{rule_results_summary}{prior_increments_summary}
         Iteration budget: {iteration + 1} of {max_iterations} ({"use remaining iterations wisely" if iteration >= max_iterations // 2 else "early iterations, gather information as needed"})
-        {_no_action_warning(history)}{_convergence_hint(history)}
+        {_no_action_warning(history)}{_convergence_hint(history)}{_ask_delay_warning(history, max_ask_delay, consecutive_failed_no_ask)}
 
         Desired state: {desired_state}
 
@@ -778,10 +788,12 @@ async def decide(current_state: dict, desired_state: str, rules: list[dict],
                  history: list[dict], user_answers: list[dict] | None = None,
                  rule_results: list[dict] | None = None,
                  iteration: int = 0, max_iterations: int = 10,
-                 prior_increments: list[dict] | None = None) -> dict:
+                 prior_increments: list[dict] | None = None,
+                 max_ask_delay: int = 0, consecutive_failed_no_ask: int = 0) -> dict:
     """Ask the AI what to do via claude -p."""
     prompt = build_prompt(current_state, desired_state, rules, history, user_answers,
-                          rule_results, iteration, max_iterations, prior_increments)
+                          rule_results, iteration, max_iterations, prior_increments,
+                          max_ask_delay, consecutive_failed_no_ask)
 
     proc = await asyncio.create_subprocess_exec(
         "claude", "-p", prompt,
@@ -1405,6 +1417,8 @@ async def reconcile(
     increments: list[dict] | None = None,
     user_answers: list[dict] | None = None,
     ask_user: "AskUserFunc | None" = None,
+    on_event: "Callable[[dict], None] | None" = None,
+    max_ask_delay: int = 0,
 ):
     """Run the AI reconciliation loop.
 
@@ -1458,6 +1472,8 @@ async def reconcile(
         "inventory": inventory,
         "quiet": quiet,
     }
+    if on_event:
+        automation_kwargs["on_event"] = on_event
     if secret_bindings:
         automation_kwargs["secret_bindings"] = secret_bindings
     if state_file:
@@ -1485,6 +1501,8 @@ async def reconcile(
         if initial_observations:
             print(f"Initial observations from previous run: {len(initial_observations)}")
         print()
+
+        consecutive_failed_no_ask = 0
 
         for i in range(max_iterations):
             print(f"=== Iteration {i + 1} ===")
@@ -1565,7 +1583,8 @@ async def reconcile(
             # Decide
             print("Asking AI...")
             decision = await decide(current_state, desired_state, rules, history, user_answers,
-                                    rule_results, i, max_iterations, prior_increments)
+                                    rule_results, i, max_iterations, prior_increments,
+                                    max_ask_delay, consecutive_failed_no_ask)
 
             reasoning = decision.get("reasoning", "")
             if reasoning:
@@ -1622,6 +1641,7 @@ async def reconcile(
                     "actions": [],
                     "results": [],
                 })
+                consecutive_failed_no_ask = 0
                 print()
                 continue
 
@@ -1651,6 +1671,16 @@ async def reconcile(
                 "actions": actions,
                 "results": results,
             })
+
+            # Track consecutive failed iterations without asking
+            any_failed = any(
+                isinstance(r, dict) and isinstance(r.get("result"), dict) and r["result"].get("failed")
+                for r in results
+            )
+            if any_failed:
+                consecutive_failed_no_ask += 1
+            else:
+                consecutive_failed_no_ask = 0
 
             # State operations
             state_ops = decision.get("state_ops", [])
@@ -2900,6 +2930,8 @@ def cli():
                         help="Max seconds to wait for a Slack reply (0 = no timeout, default: 0)")
     parser.add_argument("--notify-slack", metavar="CHANNEL",
                         help="Post run summaries to a Slack channel (e.g., '#deploys'). Requires SLACK_BOT_TOKEN.")
+    parser.add_argument("--max-ask-delay", type=int, default=0,
+                        help="Force AI to ask the user after N consecutive failed iterations without asking (0 = disabled)")
     parser.add_argument("--tui", action="store_true",
                         help="Run with full-screen terminal UI")
     args = parser.parse_args()
@@ -2947,6 +2979,7 @@ def cli():
         audit_log=args.audit_log,
         review_log=args.review_log,
         script_log=args.script_log,
+        max_ask_delay=args.max_ask_delay,
     )
 
     # Select ask_user backend
