@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "AI reconciliation loop for FTL2 — observe, reason, act, learn"
 requires-python = ">=3.13"
 dependencies = [
-    "ftl2 @ git+https://github.com/benthomasson/ftl2",
+    "ftl2 @ git+https://github.com/benthomasson/faster-than-light2",
     "linode_api4",
     "segment-analytics-python>=2.3.0",
     "textual>=0.50.0",

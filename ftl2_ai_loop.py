@@ -26,6 +26,9 @@ import re
 import sys
 import textwrap
 import traceback
+
+# Allow spawning claude subprocesses when invoked from within Claude Code
+os.environ.pop("CLAUDECODE", None)
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -740,7 +743,8 @@ def build_prompt(current_state: dict, desired_state: str, rules: list[dict],
           "ask": {{
             "question": "Which web server should I install?",
             "options": ["nginx", "apache", "caddy"]
-          }}
+          }},
+          "blocked": "explanation of why this task is impossible or permanently blocked"
         }}
 
         Notes:
@@ -764,6 +768,13 @@ def build_prompt(current_state: dict, desired_state: str, rules: list[dict],
           - You want to confirm before a destructive action (deleting data, overwriting config)
           - You're stuck after multiple failed attempts and need guidance
           - There are multiple valid approaches and the user should choose
+        - "blocked" is optional: set it to a string explaining why the task cannot be
+          completed. Use this when:
+          - A required secret or credential is missing and cannot be resolved
+          - A module is permanently failing due to a configuration or permission error
+          - The desired state is impossible given the current constraints
+          - You've exhausted all approaches and the problem requires human intervention
+          When "blocked" is set, the loop will stop immediately and report the reason.
           "options" is optional — omit it for free-form questions. When present, the user
           can pick a numbered option or type a custom answer.
           When you use "ask", set "actions" to [] — don't act and ask in the same response.
@@ -1175,8 +1186,16 @@ def _notify_slack(
                 status = f"*Incremental partial* — {converged_count}/{total} converged in {_format_duration(duration)}"
             lines = [f"{emoji} {status}", "", f"> {desired_state}", ""]
             for j, inc in enumerate(increments, 1):
-                inc_emoji = ":white_check_mark:" if inc.get("converged") else ":x:"
-                lines.append(f"{inc_emoji} {j}. {inc['desired_state']}")
+                if inc.get("blocked"):
+                    inc_emoji = ":no_entry:"
+                elif inc.get("converged"):
+                    inc_emoji = ":white_check_mark:"
+                else:
+                    inc_emoji = ":x:"
+                inc_line = f"{inc_emoji} {j}. {inc['desired_state']}"
+                if inc.get("blocked"):
+                    inc_line += f"\n    Blocked: {inc['blocked']}"
+                lines.append(inc_line)
             lines.append("")
             lines.append(f"{actions_taken} action(s) taken across {total_iters} iteration(s)")
             text = "\n".join(lines)
@@ -1608,6 +1627,20 @@ async def reconcile(
             reasoning = decision.get("reasoning", "")
             if reasoning:
                 print(f"  Reasoning: {reasoning}")
+
+            # Blocked — the AI says the task is impossible or permanently stuck
+            blocked_reason = decision.get("blocked")
+            if blocked_reason:
+                print(f"\nBlocked after {i + 1} iteration(s): {blocked_reason}")
+                history.append({
+                    "iteration": i,
+                    "reasoning": reasoning,
+                    "blocked": blocked_reason,
+                    "actions": [],
+                    "results": [],
+                })
+                _write_audit_log(history, converged=False, iterations=i + 1, increments=increments)
+                return {"converged": False, "blocked": blocked_reason, "next_observations": [], "history": history, "fix_increment": None}
 
             if decision.get("converged"):
                 print(f"\nConverged after {i + 1} iteration(s).")
@@ -2698,6 +2731,16 @@ async def run_incremental(reconcile_kwargs: dict, plan_file: str | None = None, 
 
                 increments[-1]["converged"] = result["converged"]
                 increments[-1]["iterations"] = len(result.get("history", []))
+
+                # Blocked — stop the entire run
+                if result.get("blocked"):
+                    increments[-1]["blocked"] = result["blocked"]
+                    print(f"\nIncrement {n} blocked: {result['blocked']}")
+                    print("Stopping incremental run.")
+                    for entry in result.get("history", []):
+                        entry["increment_n"] = n
+                    all_history.extend(result.get("history", []))
+                    break
 
                 # Tag history entries with increment number before accumulating
                 for entry in result.get("history", []):
