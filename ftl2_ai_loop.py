@@ -1399,10 +1399,15 @@ async def execute(ftl, actions: list[dict], dry_run: bool = False) -> list[dict]
                     if label and ipv4_list:
                         ip = ipv4_list[0]
                         try:
+                            # Preserve existing ansible_user from state if host was already registered
+                            existing_user = "root"
+                            if hasattr(ftl, 'state') and ftl.state and ftl.state.has_host(label):
+                                host_data = ftl.state.get_host(label) or {}
+                                existing_user = host_data.get("ansible_user") or "root"
                             ftl.add_host(
                                 hostname=label,
                                 ansible_host=ip,
-                                ansible_user="root",
+                                ansible_user=existing_user,
                             )
                             if hasattr(ftl, 'state') and ftl.state:
                                 ftl.state.add_resource(label, {
