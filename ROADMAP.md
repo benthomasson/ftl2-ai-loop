@@ -1,4 +1,4 @@
-# ftl2-ai-loop Roadmap
+# ftl2-iac-loop Roadmap
 
 ## Near-term
 

@@ -23,7 +23,7 @@ from pathlib import Path
 # Add parent directory to path for import
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from ftl2_ai_loop import reconcile
+from ftl2_iac_loop import reconcile
 
 
 NGINX_OBSERVERS = [

@@ -1,4 +1,4 @@
-# ftl2-ai-loop
+# ftl2-iac-loop
 
 AI reconciliation loop for FTL2. Describe the desired state of your infrastructure in natural language, and the AI observes current state, decides what to do, executes FTL2 module calls, and iterates until convergence.
 
@@ -10,8 +10,8 @@ Requires Python 3.13+ and [Claude Code](https://claude.ai/code) installed (`clau
 
 ```bash
 # Run directly from GitHub — no install needed
-uvx --from "git+https://github.com/benthomasson/ftl2-ai-loop" \
-    ftl2-ai-loop "ensure /tmp/demo exists as a directory"
+uvx --from "git+https://github.com/benthomasson/ftl2-iac-loop" \
+    ftl2-iac-loop "ensure /tmp/demo exists as a directory"
 ```
 
 ```
@@ -57,51 +57,51 @@ The AI can also request additional observations for the next iteration — it ve
 
 ```bash
 # Basic — describe what you want
-ftl2-ai-loop "nginx installed and running"
+ftl2-iac-loop "nginx installed and running"
 
 # Dry run — observe and decide but don't execute
-ftl2-ai-loop "PostgreSQL 16 with mydb database" --dry-run
+ftl2-iac-loop "PostgreSQL 16 with mydb database" --dry-run
 
 # Remote hosts via inventory
-ftl2-ai-loop "nginx installed and running" -i inventory.yml
+ftl2-iac-loop "nginx installed and running" -i inventory.yml
 
 # With secret bindings (reads from environment variable)
-ftl2-ai-loop "start a new linode server named hello-ai" \
+ftl2-iac-loop "start a new linode server named hello-ai" \
     -s community.general.linode_v4.access_token=LINODE_TOKEN \
     -s community.general.linode_v4.root_pass=LINODE_ROOT_PASS
 
 # Track resources across runs with state file
-ftl2-ai-loop "ensure my-server exists on linode" --state-file state.json
+ftl2-iac-loop "ensure my-server exists on linode" --state-file state.json
 
 # Custom rules directory
-ftl2-ai-loop "nginx installed and running" --rules-dir my-rules/
+ftl2-iac-loop "nginx installed and running" --rules-dir my-rules/
 
 # Limit iterations
-ftl2-ai-loop "complex setup" --max-iterations 5
+ftl2-iac-loop "complex setup" --max-iterations 5
 
 # Dev mode — AI reviews rules before they fire
-ftl2-ai-loop "nginx installed and running" --dev --rules-dir my-rules/
+ftl2-iac-loop "nginx installed and running" --dev --rules-dir my-rules/
 
 # Continuous mode — re-reconcile every 60 seconds (default)
-ftl2-ai-loop "nginx installed and running" --continuous
+ftl2-iac-loop "nginx installed and running" --continuous
 
 # Continuous with custom delay (5 minutes)
-ftl2-ai-loop "nginx installed and running" --continuous --delay 300
+ftl2-iac-loop "nginx installed and running" --continuous --delay 300
 
 # Incremental — plan and execute step by step
-ftl2-ai-loop -f infrastructure.md --incremental --state-file state.json
+ftl2-iac-loop -f infrastructure.md --incremental --state-file state.json
 
 # Plan only — show what would be done, save to file
-ftl2-ai-loop -f infrastructure.md --plan-only -o plan.json
+ftl2-iac-loop -f infrastructure.md --plan-only -o plan.json
 
 # Execute a saved plan
-ftl2-ai-loop -f infrastructure.md --incremental --plan plan.json
+ftl2-iac-loop -f infrastructure.md --incremental --plan plan.json
 
 # With policy enforcement
-ftl2-ai-loop "configure the server" --policy policy.yml --environment prod
+ftl2-iac-loop "configure the server" --policy policy.yml --environment prod
 
 # Full observability — audit, prompt, review, and script logs
-ftl2-ai-loop -f desired_state.md --incremental \
+ftl2-iac-loop -f desired_state.md --incremental \
     --audit-log audit.json \
     --prompt-log prompts/ \
     --review-log reviews/ \
@@ -147,7 +147,7 @@ Rules are Python files the AI writes to handle recurring patterns. Each rule has
 ```python
 # rules/ensure_nginx.py
 """Install and start nginx when it's missing.
-Created: 2026-02-09 12:00 UTC by ftl2-ai-loop.
+Created: 2026-02-09 12:00 UTC by ftl2-iac-loop.
 Trigger: nginx package not present
 """
 
@@ -212,7 +212,7 @@ Converged after 1 iteration(s).
 Run #2 converged. Next run in 60s...
 ```
 
-This turns ftl2-ai-loop into a persistent controller. Combine with `--state-file` to track resources across runs and `--dev` to review rules as they develop.
+This turns ftl2-iac-loop into a persistent controller. Combine with `--state-file` to track resources across runs and `--dev` to review rules as they develop.
 
 ## Incremental Mode
 
@@ -220,7 +220,7 @@ With `--incremental`, the AI plans the work as a series of increments, executes 
 
 ```bash
 # Build a minecraft server incrementally
-ftl2-ai-loop -f MINECRAFT_INSTALLATION_GUIDE.md \
+ftl2-iac-loop -f MINECRAFT_INSTALLATION_GUIDE.md \
     --incremental \
     --state-file .ftl2-state.json \
     --script-log scripts/ \
@@ -236,10 +236,10 @@ With `--plan-only`, the AI creates the plan but doesn't execute anything. Save t
 
 ```bash
 # Plan without executing
-ftl2-ai-loop -f desired_state.md --plan-only -o plan.json
+ftl2-iac-loop -f desired_state.md --plan-only -o plan.json
 
 # Execute a saved plan
-ftl2-ai-loop -f desired_state.md --incremental --plan plan.json
+ftl2-iac-loop -f desired_state.md --incremental --plan plan.json
 ```
 
 ## Policy Engine
@@ -247,7 +247,7 @@ ftl2-ai-loop -f desired_state.md --incremental --plan plan.json
 The `--policy` flag enforces rules about what the AI loop is allowed to do. Every module execution — whether from a deterministic rule or an AI decision — is checked against the policy before running.
 
 ```bash
-ftl2-ai-loop "configure the server" \
+ftl2-iac-loop "configure the server" \
     --policy policy.yml \
     --environment prod
 ```
@@ -331,7 +331,7 @@ Post questions to a Slack channel and wait for a human to reply in the thread. N
 
 ```bash
 SLACK_BOT_TOKEN=xoxb-... \
-ftl2-ai-loop "ensure nginx is running" \
+ftl2-iac-loop "ensure nginx is running" \
   --incremental \
   --ask-via-slack "#approvals" \
   --slack-poll-interval 5 \
@@ -349,7 +349,7 @@ In `--incremental` mode, plan confirmation is posted to Slack before any increme
 
 ```python
 import asyncio
-from ftl2_ai_loop import reconcile
+from ftl2_iac_loop import reconcile
 
 OBSERVERS = [
     {"name": "nginx_pkg", "module": "shell",

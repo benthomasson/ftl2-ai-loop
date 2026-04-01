@@ -1,4 +1,4 @@
-# CLAUDE.md — ftl2-ai-loop
+# CLAUDE.md — ftl2-iac-loop
 
 ## What This Is
 
@@ -11,7 +11,7 @@ observe (FTL2 modules) → check rules → [match → execute rule action → ne
                                         [no match → AI decides → execute → optionally write rule]
 ```
 
-### Core Components in `ftl2_ai_loop.py`
+### Core Components in `ftl2_iac_loop.py`
 
 | Function | Purpose |
 |----------|---------|
@@ -66,18 +66,18 @@ Optional `--state-file state.json` tracks resources and hosts across runs. The A
 
 ```bash
 # Via uvx from GitHub (no install)
-uvx --from "git+https://github.com/benthomasson/ftl2-ai-loop" \
-    ftl2-ai-loop "ensure /tmp/demo exists as a directory"
+uvx --from "git+https://github.com/benthomasson/ftl2-iac-loop" \
+    ftl2-iac-loop "ensure /tmp/demo exists as a directory"
 
 # Local development
-uv run ftl2_ai_loop.py "ensure /tmp/demo exists as a directory"
+uv run ftl2_iac_loop.py "ensure /tmp/demo exists as a directory"
 
 # With options
-ftl2-ai-loop "nginx running" -i inventory.yml --dry-run --max-iterations 5
-ftl2-ai-loop "create linode" -s community.general.linode_v4.access_token=LINODE_TOKEN
+ftl2-iac-loop "nginx running" -i inventory.yml --dry-run --max-iterations 5
+ftl2-iac-loop "create linode" -s community.general.linode_v4.access_token=LINODE_TOKEN
 
 # Dev mode — AI reviews rules before they fire
-ftl2-ai-loop "nginx running" --dev --rules-dir my-rules/
+ftl2-iac-loop "nginx running" --dev --rules-dir my-rules/
 ```
 
 ## FTL2 Module Reference
@@ -109,7 +109,7 @@ FQCN modules (e.g., `community.general.linode_v4`, `community.general.homebrew`)
 ## File Structure
 
 ```
-ftl2_ai_loop.py          # Everything — observe, decide, execute, learn, CLI
+ftl2_iac_loop.py          # Everything — observe, decide, execute, learn, CLI
 pyproject.toml           # Package config, hatchling build, ftl2 dependency
 examples/
   nginx_example.py       # Programmatic usage with custom observers

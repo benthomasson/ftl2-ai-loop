@@ -1,4 +1,4 @@
-# ftl2-ai-loop Development History
+# ftl2-iac-loop Development History
 
 ## Core Loop (Feb 9)
 

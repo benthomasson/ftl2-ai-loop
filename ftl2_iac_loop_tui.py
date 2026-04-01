@@ -1,4 +1,4 @@
-"""Textual TUI for ftl2-ai-loop.
+"""Textual TUI for ftl2-iac-loop.
 
 Provides a full-screen terminal interface with scrollable log output,
 live status bar, and TUI-based ask_user prompts. Launched via --tui flag.
@@ -66,9 +66,9 @@ _RE_INCREMENT = re.compile(r"---\s*Increment\s+(\d+)", re.IGNORECASE)
 
 
 class AILoopApp(App):
-    """Full-screen TUI for ftl2-ai-loop."""
+    """Full-screen TUI for ftl2-iac-loop."""
 
-    TITLE = "ftl2-ai-loop"
+    TITLE = "ftl2-iac-loop"
     CSS = """
     #log {
         height: 1fr;
@@ -307,7 +307,7 @@ class AILoopApp(App):
 
 def run_tui(args, reconcile_kwargs: dict, notify_fn) -> None:
     """Entry point for TUI mode. Determines which function to run and launches the app."""
-    from ftl2_ai_loop import (
+    from ftl2_iac_loop import (
         reconcile,
         run_continuous,
         run_incremental,
